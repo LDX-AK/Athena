@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# VS Code
+.vscode/
+
+# Local data and logs
+data/
+tmp/
+*.log
+*.out
+*.err
