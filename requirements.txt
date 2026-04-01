@@ -1,0 +1,47 @@
+# Athena AI-Bot v2 — Requirements
+
+# ── Биржи ──────────────────────────────────────────────────────
+ccxt>=4.3.0
+# ccxt[pro]>=4.3.0       # async WebSocket (pip install ccxt[pro])
+
+# ── ML Core ────────────────────────────────────────────────────
+lightgbm>=4.3.0
+scikit-learn>=1.4.0
+numpy>=1.26.0
+pandas>=2.2.0
+
+# ── RL (опционально, включается через RL_ENABLED=True) ─────────
+# stable-baselines3>=2.3.0
+# gymnasium>=0.29.0
+
+# ── Sentiment ──────────────────────────────────────────────────
+aiohttp>=3.9.0             # CryptoPanic API async запросы
+vaderSentiment>=3.3.2      # fallback локальный sentiment анализ
+
+# ── Dashboard ──────────────────────────────────────────────────
+streamlit>=1.35.0          # визуальный дашборд
+
+# ── Инфраструктура ─────────────────────────────────────────────
+redis>=5.0.0               # кэш реального времени
+python-dotenv>=1.0.0       # .env файлы
+
+# ── Kaggle (для скачивания датасетов) ──────────────────────────
+# kaggle>=1.6.0            # pip install kaggle
+
+# ── Утилиты ────────────────────────────────────────────────────
+loguru>=0.7.0              # улучшенное логирование
+
+# ══════════════════════════════════════════════════════════════
+# УСТАНОВКА:
+#   pip install -r requirements.txt
+#
+# KAGGLE ДАННЫЕ:
+#   pip install kaggle
+#   kaggle datasets download gautamchettiar/historical-sentiment-data-btc-eth-bnb-ada
+#   kaggle datasets download pratyushpuri/crypto-market-sentiment-and-price-dataset-2025
+#   mkdir -p data/raw/sentiment && mv *.csv data/raw/sentiment/
+#
+# RL (ОПЦИОНАЛЬНО):
+#   pip install stable-baselines3 gymnasium
+#   Затем в config.py: RL_ENABLED = True
+# ══════════════════════════════════════════════════════════════

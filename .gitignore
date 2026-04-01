@@ -2,9 +2,11 @@
 __pycache__/
 *.pyc
 .venv/
+.env
 
 # VS Code
-.vscode/
+.vscode/*
+!.vscode/settings.json
 
 # Local data and logs
 data/
@@ -12,3 +14,10 @@ tmp/
 *.log
 *.out
 *.err
+
+# Import artifacts
+files1/
+files2/
+files1.zip
+files2.zip
+Claude.html

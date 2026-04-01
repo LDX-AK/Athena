@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+
+  # ── Redis — кэш реального времени ──────────────────────────
+  athena-redis:
+    image: redis:7-alpine
+    container_name: athena-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - athena_redis_data:/data
+
+  # ── TimescaleDB — хранение OHLCV истории ───────────────────
+  athena-db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: athena-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       athena
+      POSTGRES_USER:     athena
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-athena_secret}
+    ports:
+      - "5432:5432"
+    volumes:
+      - athena_db_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+
+  # ── Grafana — мониторинг ────────────────────────────────────
+  athena-grafana:
+    image: grafana/grafana:latest
+    container_name: athena-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-athena123}
+    volumes:
+      - athena_grafana_data:/var/lib/grafana
+    depends_on:
+      - athena-db
+
+volumes:
+  athena_redis_data:
+  athena_db_data:
+  athena_grafana_data:
