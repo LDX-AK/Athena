@@ -5,8 +5,8 @@ athena/execution/router.py — AthenaRouter
 import asyncio
 import time
 import logging
-from typing import Dict, Optional
-import ccxt.pro as ccxtpro
+from typing import Dict, Optional, List
+import ccxt
 from athena.model.signal import AthenaSignal
 
 logger = logging.getLogger("athena.execution")
@@ -16,9 +16,14 @@ class AthenaRouter:
     def __init__(self, exchanges: Dict, mode: str = "paper"):
         self.mode = mode
         self.exchanges = {}
-        for name, creds in exchanges.items():
-            cls = getattr(ccxtpro, name)
-            self.exchanges[name] = cls(creds)
+        if mode != "paper":
+            for name, creds in exchanges.items():
+                if not creds.get("apiKey"):
+                    logger.warning(f"⚠️  [{name}] apiKey не задан — биржа пропущена в live режиме")
+                    continue
+                cls = getattr(ccxt, name)
+                params = {**creds, "enableRateLimit": True}
+                self.exchanges[name] = cls(params)
 
         self.paper_positions: Dict[str, Dict] = {}
         self.paper_balance   = 10_000.0
@@ -46,6 +51,7 @@ class AthenaRouter:
             "symbol":    signal.symbol,
             "exchange":  signal.exchange,
             "direction": signal.direction,
+            "confidence": signal.confidence,
             "entry":     price,
             "size_usd":  size_usd,
             "sl": sl, "tp": tp,
@@ -58,10 +64,11 @@ class AthenaRouter:
                     f"SL={sl:.4f} TP={tp:.4f} ${size_usd:.2f}")
         return {"status": "paper_opened", "symbol": signal.symbol,
                 "direction": signal.direction, "entry_price": price,
-                "size_usd": size_usd, "pnl": 0.0}
+            "size_usd": size_usd, "confidence": signal.confidence, "pnl": 0.0}
 
     async def close_paper_position(self, symbol: str, exchange: str,
-                                    current_price: float) -> Optional[Dict]:
+                                    current_price: float,
+                                    reason: str = "MANUAL") -> Optional[Dict]:
         key = f"{exchange}:{symbol}"
         pos = self.paper_positions.pop(key, None)
         if not pos:
@@ -77,8 +84,36 @@ class AthenaRouter:
         logger.info(f"📝 [PAPER] Закрыт {label} {symbol} "
                     f"PnL=${pnl:.2f} | Баланс=${self.paper_balance:.2f}")
         return {"status": "paper_closed", "symbol": symbol,
+                "exchange": exchange,
+                "direction": pos["direction"],
+                "size_usd": pos["size_usd"],
+            "confidence": pos.get("confidence"),
+                "result": reason,
                 "entry_price": pos["entry"], "exit_price": current_price,
                 "pnl": pnl, "balance": self.paper_balance}
+
+    async def check_paper_exits(self, symbol: str, exchange: str,
+                                low_price: float, high_price: float) -> List[Dict]:
+        """Проверяет SL/TP для paper-позиции и закрывает её при срабатывании."""
+        key = f"{exchange}:{symbol}"
+        pos = self.paper_positions.get(key)
+        if not pos:
+            return []
+
+        direction = pos["direction"]
+        sl = pos["sl"]
+        tp = pos["tp"]
+
+        hit_sl = (direction == 1 and low_price <= sl) or (direction == -1 and high_price >= sl)
+        hit_tp = (direction == 1 and high_price >= tp) or (direction == -1 and low_price <= tp)
+
+        if not hit_sl and not hit_tp:
+            return []
+
+        exit_price = sl if hit_sl else tp
+        reason = "SL" if hit_sl else "TP"
+        closed = await self.close_paper_position(symbol, exchange, exit_price, reason=reason)
+        return [closed] if closed else []
 
     # ── LIVE ───────────────────────────────────────────────────
 
@@ -97,13 +132,20 @@ class AthenaRouter:
         try:
             lp    = signal.price * (0.9999 if signal.direction == 1 else 1.0001)
             lp    = exchange.price_to_precision(signal.symbol, lp)
-            order = await exchange.create_order(signal.symbol, "limit", side, amount, lp,
-                                                params={"timeInForce": "GTC"})
+            order = await asyncio.to_thread(
+                exchange.create_order,
+                signal.symbol,
+                "limit",
+                side,
+                amount,
+                lp,
+                {"timeInForce": "GTC"},
+            )
             oid   = order["id"]
             filled = await self._wait_fill(exchange, signal.symbol, oid, timeout=5.0)
             if not filled:
-                await exchange.cancel_order(oid, signal.symbol)
-                order = await exchange.create_market_order(signal.symbol, side, amount)
+                await asyncio.to_thread(exchange.cancel_order, oid, signal.symbol)
+                order = await asyncio.to_thread(exchange.create_market_order, signal.symbol, side, amount)
         except Exception as e:
             logger.error(f"Ошибка ордера: {e}")
             raise
@@ -114,12 +156,12 @@ class AthenaRouter:
         logger.info(f"✅ [LIVE] {side.upper()} {signal.symbol} @ {entry:.4f}")
         return {"status": "opened", "symbol": signal.symbol,
                 "direction": signal.direction, "entry_price": entry,
-                "size_usd": size_usd, "pnl": 0.0}
+            "size_usd": size_usd, "confidence": signal.confidence, "pnl": 0.0}
 
     async def _wait_fill(self, exchange, symbol, order_id, timeout=5.0) -> bool:
         deadline = time.time() + timeout
         while time.time() < deadline:
-            o = await exchange.fetch_order(order_id, symbol)
+            o = await asyncio.to_thread(exchange.fetch_order, order_id, symbol)
             if o["status"] == "closed":
                 return True
             await asyncio.sleep(0.5)
@@ -128,13 +170,26 @@ class AthenaRouter:
     async def _set_sl_tp(self, exchange, signal: AthenaSignal, amount, sl, tp):
         opp = "sell" if signal.direction == 1 else "buy"
         try:
-            await exchange.create_order(signal.symbol, "oco", opp, amount,
-                                        exchange.price_to_precision(signal.symbol, tp),
-                                        params={"stopPrice": exchange.price_to_precision(signal.symbol, sl)})
+            await asyncio.to_thread(
+                exchange.create_order,
+                signal.symbol,
+                "oco",
+                opp,
+                amount,
+                exchange.price_to_precision(signal.symbol, tp),
+                {"stopPrice": exchange.price_to_precision(signal.symbol, sl)},
+            )
         except Exception:
             try:
-                await exchange.create_limit_order(signal.symbol, opp, amount, tp)
-                await exchange.create_order(signal.symbol, "stop_market", opp, amount,
-                                            params={"stopPrice": sl})
+                await asyncio.to_thread(exchange.create_limit_order, signal.symbol, opp, amount, tp)
+                await asyncio.to_thread(
+                    exchange.create_order,
+                    signal.symbol,
+                    "stop_market",
+                    opp,
+                    amount,
+                    None,
+                    {"stopPrice": sl},
+                )
             except Exception as e:
                 logger.error(f"⚠️  SL/TP не выставлен: {e}")

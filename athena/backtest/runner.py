@@ -11,13 +11,136 @@ athena/backtest/runner.py — AthenaBacktest v2
 import numpy as np
 import pandas as pd
 import logging
+from pathlib import Path
+from typing import Literal
 from typing import List, Dict, Optional
 from athena.features.engineer import AthenaEngineer
 from athena.model.signal import AthenaModel
 from athena.model.fusion import SignalFusion, SentimentSignal
 from athena.data.sentiment import AthenaSentiment
+from athena.filters.mtf_gate import MTFGate
 
 logger = logging.getLogger("athena.backtest")
+
+
+def load_ohlcv_from_csv(csv_path: str,
+                        symbol: Optional[str] = None,
+                        max_rows: Optional[int] = None,
+                        window: Literal["first", "last"] = "last") -> List[List[float]]:
+    """Load external OHLCV CSV files, including CryptoDataDownload minute exports."""
+    path = Path(csv_path)
+    if not path.exists():
+        raise FileNotFoundError(f"CSV not found: {path}")
+
+    with path.open("r", encoding="utf-8") as fh:
+        first_line = fh.readline().strip()
+    skiprows = 1 if first_line.startswith("http") else 0
+
+    header = pd.read_csv(path, skiprows=skiprows, nrows=0)
+    header_cols = list(header.columns)
+
+    candidates = {
+        "timestamp": ["unix", "timestamp", "Timestamp", "time", "Time", "date", "Date"],
+        "symbol": ["symbol", "Symbol", "pair", "Pair"],
+        "open": ["open", "Open"],
+        "high": ["high", "High"],
+        "low": ["low", "Low"],
+        "close": ["close", "Close"],
+        "volume": ["Volume BTC", "volume", "Volume", "vol", "base_volume"],
+    }
+
+    resolved = {}
+    for target, options in candidates.items():
+        for option in options:
+            if option in header_cols:
+                resolved[target] = option
+                break
+
+    missing = [key for key in ("timestamp", "open", "high", "low", "close", "volume") if key not in resolved]
+    if missing:
+        raise ValueError(f"CSV is missing required columns: {', '.join(missing)}")
+
+    usecols = [resolved[k] for k in ["timestamp", "open", "high", "low", "close", "volume"]]
+    if "symbol" in resolved:
+        usecols.append(resolved["symbol"])
+    usecols = list(dict.fromkeys(usecols))
+
+    chunks = []
+    total_rows = 0
+    chunksize = 100_000
+    symbol_col = resolved.get("symbol")
+
+    reader = pd.read_csv(path, skiprows=skiprows, usecols=usecols, chunksize=chunksize)
+    for chunk in reader:
+        if symbol and symbol_col:
+            chunk = chunk[chunk[symbol_col].astype(str) == symbol]
+        if chunk.empty:
+            continue
+
+        if not max_rows:
+            chunks.append(chunk)
+            continue
+
+        if window == "first":
+            remain = max_rows - total_rows
+            if remain <= 0:
+                break
+            take = chunk.iloc[:remain]
+            if not take.empty:
+                chunks.append(take)
+                total_rows += len(take)
+            if total_rows >= max_rows:
+                break
+        else:
+            chunks.append(chunk)
+            total_rows += len(chunk)
+            while total_rows > max_rows and chunks:
+                overflow = total_rows - max_rows
+                first_chunk = chunks[0]
+                if overflow >= len(first_chunk):
+                    total_rows -= len(first_chunk)
+                    chunks.pop(0)
+                else:
+                    chunks[0] = first_chunk.iloc[overflow:]
+                    total_rows -= overflow
+
+    if not chunks:
+        raise ValueError(f"No OHLCV rows loaded from CSV: {path}")
+
+    df = pd.concat(chunks, ignore_index=True)
+
+    if symbol and symbol_col and df.empty:
+        raise ValueError(f"CSV does not contain requested symbol: {symbol}")
+
+    out = pd.DataFrame({
+        "timestamp": df[resolved["timestamp"]],
+        "open": df[resolved["open"]],
+        "high": df[resolved["high"]],
+        "low": df[resolved["low"]],
+        "close": df[resolved["close"]],
+        "volume": df[resolved["volume"]],
+    }).dropna()
+
+    if pd.api.types.is_numeric_dtype(out["timestamp"]):
+        out["timestamp"] = pd.to_numeric(out["timestamp"], errors="coerce")
+        if out["timestamp"].dropna().max() < 1_000_000_000_000:
+            out["timestamp"] = out["timestamp"] * 1000
+    else:
+        out["timestamp"] = pd.to_datetime(out["timestamp"], utc=True).astype("int64") // 1_000_000
+
+    for col in ["open", "high", "low", "close", "volume"]:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+
+    out = out.dropna().sort_values("timestamp").drop_duplicates(subset=["timestamp"])
+
+    logger.info(
+        "📂 CSV loaded: %s candles from %s (window=%s, max_rows=%s)",
+        len(out),
+        path,
+        window,
+        max_rows if max_rows is not None else "all",
+    )
+    return out[["timestamp", "open", "high", "low", "close", "volume"]].values.tolist()
 
 
 class AthenaBacktest:
@@ -29,6 +152,7 @@ class AthenaBacktest:
         self.config    = config
         self.flags     = config.get("flags", {})
         self.fusion    = SignalFusion(config)
+        self.mtf_gate  = MTFGate(config)
 
     def run(self, ohlcv_data: List,
             initial_balance: float = 10_000.0,
@@ -44,7 +168,10 @@ class AthenaBacktest:
         pos_pct  = self.config["risk"]["max_position_pct"]
         min_conf = self.config["risk"]["min_confidence"]
         comm     = 0.0004
-        lookback = 120  # увеличили для multi-horizon фич
+        lookback = max(
+            int(self.config.get("data", {}).get("lookback_candles", 200)),
+            max(getattr(self.engineer, "windows", [120])) + 10,
+        )
 
         balance, trades = initial_balance, []
         in_pos = False
@@ -109,8 +236,9 @@ class AthenaBacktest:
                     continue
 
                 signal = self.fusion.predict(features, sent_data if use_sentiment else None)
+                mtf_ok, _ = self.mtf_gate.allow_signal(batch["ohlcv"], signal.direction)
 
-                if signal.direction != 0 and signal.confidence >= min_conf:
+                if signal.direction != 0 and signal.confidence >= min_conf and mtf_ok:
                     entry, direction = cl, signal.direction
                     sl = entry * (1 - sl_pct) if direction == 1 else entry * (1 + sl_pct)
                     tp = entry * (1 + tp_pct) if direction == 1 else entry * (1 - tp_pct)

@@ -45,10 +45,6 @@ try:
     SB3_AVAILABLE = True
 except ImportError:
     SB3_AVAILABLE = False
-    logger.warning(
-        "stable-baselines3 не установлен. "
-        "pip install stable-baselines3 gymnasium"
-    )
 
 
 @dataclass

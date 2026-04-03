@@ -2,6 +2,7 @@
 """Athena module smoke-test with backtest initialization."""
 import sys
 import logging
+import time
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger('athena_test')
@@ -56,12 +57,31 @@ except Exception as e:
 # Test 4: Feature engineering pipeline
 logger.info("Testing feature engineering pipeline...")
 try:
-    import numpy as np
-    # Create dummy OHLCV data
-    dummy_ohlcv = {
-        'open': 100.0, 'high': 105.0, 'low': 95.0, 'close': 102.0, 'volume': 1000.0
+    now_ms = int(time.time() * 1000)
+    ohlcv = []
+    price = 100.0
+    for i in range(140):
+        open_ = price
+        close = open_ * (1 + (0.0005 if i % 2 == 0 else -0.0003))
+        high = max(open_, close) * 1.001
+        low = min(open_, close) * 0.999
+        volume = 1000 + i * 3
+        ohlcv.append([now_ms - (140 - i) * 60_000, open_, high, low, close, volume])
+        price = close
+
+    batch = {
+        "ohlcv": ohlcv,
+        "orderbook": {
+            "bids": [[price * 0.999, 5.0], [price * 0.998, 4.0]],
+            "asks": [[price * 1.001, 4.5], [price * 1.002, 6.0]],
+            "timestamp": now_ms,
+        },
+        "symbol": "BTC/USDT",
+        "exchange": "binance",
+        "sentiment": {"score": 0.1, "volume": 1.0, "trend": 0.05},
     }
-    features = engineer.compute_features(dummy_ohlcv, {})
+    features = engineer.transform(batch)
+    assert features is not None, "Features should not be None"
     assert isinstance(features, dict), "Features should be dict"
     logger.info(f"✓ Feature engineering OK: {len(features)} features computed")
 except Exception as e:
@@ -71,8 +91,18 @@ except Exception as e:
 # Test 5: Risk manager
 logger.info("Testing risk manager...")
 try:
-    risk_ok = risk.check_position_size(100.0)  # 100 USD
-    logger.info(f"✓ Risk manager OK: position approval = {risk_ok}")
+    from athena.model.signal import AthenaSignal
+
+    sig = AthenaSignal(
+        direction=1,
+        confidence=0.8,
+        symbol="BTC/USDT",
+        exchange="binance",
+        price=price,
+        features=features,
+    )
+    decision = risk.check(sig)
+    logger.info(f"✓ Risk manager OK: approved={decision.approved}, size=${decision.adjusted_size_usd:.2f}")
 except Exception as e:
     logger.error(f"✗ Risk manager failed: {e}")
     sys.exit(1)

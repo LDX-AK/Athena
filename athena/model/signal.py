@@ -65,10 +65,13 @@ class AthenaModel:
 
     def _baseline(self, f, symbol, exchange, price) -> AthenaSignal:
         """Baseline без ML: OBI + RSI → быстрая проверка инфраструктуры."""
-        score = 0.6 * f.get("ob_imb_5", 0) + 0.4 * f.get("rsi", 0)
-        if   score >  0.3: return AthenaSignal( 1, abs(score), symbol, exchange, price, f)
-        elif score < -0.3: return AthenaSignal(-1, abs(score), symbol, exchange, price, f)
-        else:              return AthenaSignal( 0, 0.5,        symbol, exchange, price, f)
+        ob_imb = f.get("ob_imb_5", 0)
+        rsi    = f.get("rsi", 0)              # уже [-1, 1]
+        score  = 0.6 * ob_imb + 0.4 * rsi
+        # Порог снижен до 0.05 (placeholder пока нет athena_brain.pkl)
+        if   score >  0.05: return AthenaSignal( 1, min(0.95, abs(score) + 0.45), symbol, exchange, price, f)
+        elif score < -0.05: return AthenaSignal(-1, min(0.95, abs(score) + 0.45), symbol, exchange, price, f)
+        else:               return AthenaSignal( 0, 0.5,                           symbol, exchange, price, f)
 
 
 class AthenaTrainer:

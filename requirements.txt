@@ -2,12 +2,12 @@
 
 # ── Биржи ──────────────────────────────────────────────────────
 ccxt>=4.3.0
-# ccxt[pro]>=4.3.0       # async WebSocket (pip install ccxt[pro])
+# Используем обычный ccxt (REST polling) для текущего runtime
 
 # ── ML Core ────────────────────────────────────────────────────
 lightgbm>=4.3.0
 scikit-learn>=1.4.0
-numpy>=1.26.0
+numpy>=1.26.0,<2.0.0
 pandas>=2.2.0
 
 # ── RL (опционально, включается через RL_ENABLED=True) ─────────

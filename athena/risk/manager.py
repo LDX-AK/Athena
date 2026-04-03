@@ -61,6 +61,34 @@ class AthenaRisk:
         self.kelly_enabled   = config.get("kelly_enabled", True)
         self.kelly_fraction  = config.get("kelly_fraction", 0.25)
 
+    def register_open_position(self, signal: AthenaSignal, size_usd: float, sl: float, tp: float):
+        """Регистрирует новую открытую позицию для risk-контроля."""
+        exists = any(
+            p.symbol == signal.symbol and p.exchange == signal.exchange
+            for p in self.open_positions
+        )
+        if exists:
+            return
+
+        self.open_positions.append(
+            AthenaPosition(
+                symbol=signal.symbol,
+                exchange=signal.exchange,
+                direction=signal.direction,
+                entry_price=signal.price,
+                size_usd=size_usd,
+                sl=sl,
+                tp=tp,
+            )
+        )
+
+    def register_closed_position(self, symbol: str, exchange: str):
+        """Удаляет позицию из списка открытых после закрытия."""
+        for i, p in enumerate(self.open_positions):
+            if p.symbol == symbol and p.exchange == exchange:
+                self.open_positions.pop(i)
+                return
+
     def check(self, signal: AthenaSignal) -> AthenaDecision:
         if signal.direction == 0:
             return AthenaDecision(False, "HOLD")
