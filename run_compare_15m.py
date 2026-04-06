@@ -1,28 +1,39 @@
 """
 Quick before/after comparison:
-  - Reads OLD 15m trained results from checkpoint
-  - Re-runs 15m trained with current (expanded-retrained) model
-  - Saves + prints side-by-side table
+  - Reads old 15m trained results from the checkpoint
+  - Re-runs the current 15m model with repo-relative paths
+  - Saves and prints side-by-side metrics
 """
+
 import copy
 import json
 from pathlib import Path
 
-from athena.backtest.runner import AthenaBacktest, load_ohlcv_from_csv
-from athena.config import ATHENA_CONFIG
-from athena.data.sentiment import AthenaSentiment
-from athena.features.engineer import AthenaEngineer
-
-ROOT = Path("d:/Projects/Athena")
-RESULTS_DIR = ROOT / "data/results"
-MODEL_PATH_15M = ROOT / "athena/model/athena_brain_15m.pkl"
-CSV_15M = ROOT / "data/raw/ohlcv/BTCUSDT_15m_2025_06.csv"
-
+ROOT = Path(__file__).resolve().parent
+RESULTS_DIR = ROOT / "data" / "results"
+MODEL_PATH_15M = ROOT / "athena" / "model" / "athena_brain_15m.pkl"
 CHECKPOINT = RESULTS_DIR / "tf_ab_matrix_2025_06.json"
 OUT_JSON = RESULTS_DIR / "backtest_15m_comparison.json"
 
 
+def locate_csv() -> Path:
+    raw_dir = ROOT / "data" / "raw" / "ohlcv"
+    preferred = [
+        raw_dir / "BTCUSDT_15m_2025_06.csv",
+        raw_dir / "BTCUSDT_15m_latest.csv",
+    ]
+    for path in preferred:
+        if path.exists():
+            return path
+    matches = sorted(raw_dir.glob("BTCUSDT_15m*.csv")) if raw_dir.exists() else []
+    if matches:
+        return matches[-1]
+    raise FileNotFoundError(f"15m OHLCV CSV not found under {raw_dir}")
+
+
 def make_cfg(sentiment_on: bool, profile: str) -> dict:
+    from athena.config import ATHENA_CONFIG
+
     cfg = copy.deepcopy(ATHENA_CONFIG)
     cfg["symbols"] = ["BTC/USDT"]
     cfg["timeframe"] = "15m"
@@ -47,11 +58,15 @@ def make_cfg(sentiment_on: bool, profile: str) -> dict:
 
 
 def run_case(sentiment_on: bool, profile: str) -> dict:
+    from athena.backtest.runner import AthenaBacktest, load_ohlcv_from_csv
+    from athena.data.sentiment import AthenaSentiment
+    from athena.features.engineer import AthenaEngineer
+
     cfg = make_cfg(sentiment_on=sentiment_on, profile=profile)
-    engineer = AthenaEngineer(cfg)
+    engineer = AthenaEngineer()
     sentiment = AthenaSentiment(cfg)
     backtest = AthenaBacktest(engineer, sentiment, cfg)
-    ohlcv = load_ohlcv_from_csv(str(CSV_15M), symbol=None, max_rows=1500, window="first")
+    ohlcv = load_ohlcv_from_csv(str(locate_csv()), symbol=None, max_rows=1500, window="first")
     result = backtest.run(ohlcv, initial_balance=10_000.0, symbol="BTC/USDT")
     return result if result else {"total_trades": 0}
 
@@ -68,12 +83,12 @@ def print_table(case_key: str, old: dict, new: dict):
     print(f"  Case: {case_key}")
     print(f"{'='*60}")
     metrics = [
-        ("total_trades",     "Trades",   True),
-        ("win_rate",         "Win Rate", True),
-        ("total_return_pct", "Return%",  True),
-        ("sharpe_ratio",     "Sharpe",   True),
-        ("profit_factor",    "PF",       True),
-        ("max_drawdown_pct", "MaxDD%",   False),
+        ("total_trades", "Trades", True),
+        ("win_rate", "Win Rate", True),
+        ("total_return_pct", "Return%", True),
+        ("sharpe_ratio", "Sharpe", True),
+        ("profit_factor", "PF", True),
+        ("max_drawdown_pct", "MaxDD%", False),
     ]
     print(f"  {'Metric':<20} {'Before':>14} {'After':>30}")
     print(f"  {'-'*20} {'-'*14} {'-'*30}")
@@ -84,7 +99,6 @@ def print_table(case_key: str, old: dict, new: dict):
 
 
 def main():
-    # Load old checkpoint
     old_data = {}
     if CHECKPOINT.exists():
         try:
@@ -94,30 +108,28 @@ def main():
 
     old_trained = old_data.get("15m", {}).get("trained", {})
     cases = [
-        (True,  "conservative", "sent_on__conservative"),
-        (True,  "aggressive",   "sent_on__aggressive"),
+        (True, "conservative", "sent_on__conservative"),
+        (True, "aggressive", "sent_on__aggressive"),
         (False, "conservative", "sent_off__conservative"),
-        (False, "aggressive",   "sent_off__aggressive"),
+        (False, "aggressive", "sent_off__aggressive"),
     ]
 
     new_trained = {}
     for sentiment_on, profile, key in cases:
         print(f"Running: 15m trained | {key} ...")
         new_trained[key] = run_case(sentiment_on, profile)
-        print(f"  -> trades={new_trained[key].get('total_trades')}, "
-              f"win_rate={new_trained[key].get('win_rate',0):.3f}, "
-              f"return%={new_trained[key].get('total_return_pct',0):.4f}")
+        print(
+            f"  -> trades={new_trained[key].get('total_trades')}, "
+            f"win_rate={new_trained[key].get('win_rate', 0):.3f}, "
+            f"return%={new_trained[key].get('total_return_pct', 0):.4f}"
+        )
 
-    # Print comparison tables
-    print("\n\n" + "="*60)
+    print("\n\n" + "=" * 60)
     print("  BEFORE vs AFTER (15m model, expanded retrain)")
-    print("="*60)
-    for sentiment_on, profile, key in cases:
-        old = old_trained.get(key, {})
-        new = new_trained[key]
-        print_table(key, old, new)
+    print("=" * 60)
+    for _, _, key in cases:
+        print_table(key, old_trained.get(key, {}), new_trained[key])
 
-    # Save
     comparison = {
         "before": old_trained,
         "after": new_trained,
@@ -126,27 +138,23 @@ def main():
     OUT_JSON.write_text(json.dumps(comparison, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nSaved comparison: {OUT_JSON}")
 
-    # Update main checkpoint with new trained results
-    # Print comparison tables
-    print("\n\n" + "="*60)
-    print("  BEFORE vs AFTER (15m model, expanded retrain)")
-    print("="*60)
-    for sentiment_on, profile, key in cases:
-        old = old_trained.get(key, {})
-        new = new_trained[key]
-        print_table(key, old, new)
-
     if "15m" in old_data:
         old_data["15m"]["trained"] = new_trained
-        # Recompute delta
         delta = {}
         for key in new_trained:
-            bl = old_data["15m"].get("baseline", {}).get(key, {})
-            for metric in ["total_trades", "win_rate", "total_return_pct", "max_drawdown_pct", "sharpe_ratio", "profit_factor"]:
+            baseline = old_data["15m"].get("baseline", {}).get(key, {})
+            for metric in [
+                "total_trades",
+                "win_rate",
+                "total_return_pct",
+                "max_drawdown_pct",
+                "sharpe_ratio",
+                "profit_factor",
+            ]:
                 delta.setdefault(key, {})[metric] = {
-                    "baseline": float(bl.get(metric, 0.0) or 0.0),
+                    "baseline": float(baseline.get(metric, 0.0) or 0.0),
                     "trained": float(new_trained[key].get(metric, 0.0) or 0.0),
-                    "delta": float(new_trained[key].get(metric, 0.0) or 0.0) - float(bl.get(metric, 0.0) or 0.0),
+                    "delta": float(new_trained[key].get(metric, 0.0) or 0.0) - float(baseline.get(metric, 0.0) or 0.0),
                 }
         old_data["15m"]["delta"] = delta
         CHECKPOINT.write_text(json.dumps(old_data, indent=2, ensure_ascii=False), encoding="utf-8")

@@ -12,8 +12,8 @@ ExecStart=/home/athena/Athena/.venv/bin/python -u /home/athena/Athena/train_mode
   --model-path /home/athena/Athena/athena/model/athena_brain_15m.pkl \
   --max-rows 8000 \
   --csv-window last
-StandardOutput=append:/home/athena/Athena/data/results/train_15m_$(date +\%Y\%m\%d_\%H\%M\%S).log
-StandardError=append:/home/athena/Athena/data/results/train_15m_$(date +\%Y\%m\%d_\%H\%M\%S).err.log
+StandardOutput=append:/home/athena/Athena/data/results/train_15m_systemd.log
+StandardError=append:/home/athena/Athena/data/results/train_15m_systemd.err.log
 Restart=on-failure
 RestartSec=600
 

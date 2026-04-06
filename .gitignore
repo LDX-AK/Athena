@@ -10,6 +10,8 @@ __pycache__/
 
 # Local data and logs
 data/
+!athena/data/
+!athena/data/*.py
 tmp/
 *.log
 *.out
