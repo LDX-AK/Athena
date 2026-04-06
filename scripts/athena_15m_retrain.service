@@ -1,0 +1,21 @@
+[Unit]
+Description=Athena 15m Model Retrain (Weekly, Sunday 02:00 UTC)
+After=network.target
+
+[Service]
+Type=oneshot
+User=athena
+WorkingDirectory=/home/athena/Athena
+ExecStart=/home/athena/Athena/.venv/bin/python -u /home/athena/Athena/train_model_tf.py \
+  --timeframe 15m \
+  --csv-path /home/athena/Athena/data/raw/ohlcv/BTCUSDT_15m_latest.csv \
+  --model-path /home/athena/Athena/athena/model/athena_brain_15m.pkl \
+  --max-rows 8000 \
+  --csv-window last
+StandardOutput=append:/home/athena/Athena/data/results/train_15m_$(date +\%Y\%m\%d_\%H\%M\%S).log
+StandardError=append:/home/athena/Athena/data/results/train_15m_$(date +\%Y\%m\%d_\%H\%M\%S).err.log
+Restart=on-failure
+RestartSec=600
+
+[Install]
+WantedBy=multi-user.target

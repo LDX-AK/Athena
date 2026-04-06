@@ -1,0 +1,12 @@
+[Unit]
+Description=Athena 15m Retrain Timer (Weekly)
+Requires=athena_15m_retrain.service
+
+[Timer]
+# Run every Sunday at 02:00 UTC
+OnCalendar=Sun *-*-* 02:00:00
+Persistent=true
+Unit=athena_15m_retrain.service
+
+[Install]
+WantedBy=timers.target
