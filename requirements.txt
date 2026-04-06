@@ -8,7 +8,7 @@ ccxt>=4.3.0
 lightgbm>=4.3.0
 scikit-learn>=1.4.0
 numpy>=1.26.0,<2.0.0
-pandas>=2.2.0
+pandas>=2.1.4,<2.2.0   # conservative Debian/VPS-safe pin
 
 # ── RL (опционально, включается через RL_ENABLED=True) ─────────
 # stable-baselines3>=2.3.0

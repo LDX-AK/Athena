@@ -28,6 +28,7 @@ class AthenaSignal:
 class AthenaModel:
     def __init__(self, model_path: str):
         self.model_path = model_path
+        self._schema_alignment_logged = False
         self.model      = self._load()
 
     def _load(self):
@@ -39,6 +40,62 @@ class AthenaModel:
         except FileNotFoundError:
             logger.warning("⚠️  Модель не найдена → baseline режим (OBI + RSI)")
             return None
+
+    def _trained_feature_names(self):
+        if self.model is None:
+            return None
+
+        for attr_name in ("feature_name_", "feature_names_in_"):
+            value = getattr(self.model, attr_name, None)
+            if value is None:
+                continue
+            if callable(value):
+                try:
+                    value = value()
+                except TypeError:
+                    pass
+            names = [str(name) for name in value]
+            if names:
+                return names
+
+        booster = getattr(self.model, "booster_", None)
+        if booster is not None and hasattr(booster, "feature_name"):
+            try:
+                names = [str(name) for name in booster.feature_name()]
+                if names:
+                    return names
+            except Exception:
+                pass
+
+        return None
+
+    def _prepare_inference_frame(self, X_dict: Dict) -> pd.DataFrame:
+        X = pd.DataFrame([X_dict], dtype=float)
+        trained_feature_names = self._trained_feature_names()
+        if not trained_feature_names:
+            return X
+
+        missing = [name for name in trained_feature_names if name not in X.columns]
+        extra = [name for name in X.columns if name not in trained_feature_names]
+
+        for name in missing:
+            X[name] = 0.0
+        if extra:
+            X = X.drop(columns=extra)
+
+        X = X.reindex(columns=trained_feature_names, fill_value=0.0)
+
+        if missing or extra:
+            log_fn = logger.warning if not self._schema_alignment_logged else logger.debug
+            log_fn(
+                "⚠️ Inference schema aligned for %s | missing=%d extra=%d",
+                self.model_path,
+                len(missing),
+                len(extra),
+            )
+            self._schema_alignment_logged = True
+
+        return X
 
     def predict(self, features: Optional[Dict]) -> AthenaSignal:
         null = AthenaSignal(0, 0.0, "", "", 0.0, {})
@@ -55,7 +112,7 @@ class AthenaModel:
         if self.model is None:
             return self._baseline(X_dict, symbol, exchange, price)
 
-        X     = pd.DataFrame([X_dict])
+        X     = self._prepare_inference_frame(X_dict)
         proba = self.model.predict_proba(X)[0]   # [SELL, HOLD, BUY]
         cls   = int(np.argmax(proba))
         conf  = float(proba[cls])
