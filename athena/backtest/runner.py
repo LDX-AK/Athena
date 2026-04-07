@@ -154,6 +154,34 @@ class AthenaBacktest:
         self.fusion    = SignalFusion(config)
         self.mtf_gate  = MTFGate(config)
 
+    def _sentiment_macro_gate_allows(self, direction: int, sentiment: Optional[Dict]) -> tuple[bool, str]:
+        sent_cfg = self.config.get("sentiment", {})
+        if not self.flags.get("SENTIMENT_ENABLED", True):
+            return True, "sentiment-disabled"
+        if str(sent_cfg.get("mode", "weighted")) != "macro_gate":
+            return True, "sentiment-weighted"
+        if direction == 0:
+            return False, "hold"
+
+        neutral_policy = str(sent_cfg.get("macro_neutral_policy", "pass"))
+        if not sentiment:
+            return neutral_policy != "block", "sentiment-missing"
+
+        combined = float(sentiment.get("score", 0.0)) * 0.7 + float(sentiment.get("trend", 0.0)) * 0.3
+        buy_threshold = float(sent_cfg.get("macro_buy_threshold", 0.08))
+        sell_threshold = float(sent_cfg.get("macro_sell_threshold", -0.08))
+
+        if direction > 0 and combined >= buy_threshold:
+            return True, f"macro-long:{combined:.3f}"
+        if direction < 0 and combined <= sell_threshold:
+            return True, f"macro-short:{combined:.3f}"
+
+        if neutral_policy == "block":
+            return False, f"macro-block:{combined:.3f}"
+        if direction > 0:
+            return combined >= 0.0, f"macro-soft-long:{combined:.3f}"
+        return combined <= 0.0, f"macro-soft-short:{combined:.3f}"
+
     def run(self, ohlcv_data: List,
             initial_balance: float = 10_000.0,
             symbol: str = "BTC/USDT") -> Dict:
@@ -237,8 +265,12 @@ class AthenaBacktest:
 
                 signal = self.fusion.predict(features, sent_data if use_sentiment else None)
                 mtf_ok, _ = self.mtf_gate.allow_signal(batch["ohlcv"], signal.direction)
+                sentiment_ok, _ = self._sentiment_macro_gate_allows(
+                    signal.direction,
+                    sent_data if use_sentiment else None,
+                )
 
-                if signal.direction != 0 and signal.confidence >= min_conf and mtf_ok:
+                if signal.direction != 0 and signal.confidence >= min_conf and mtf_ok and sentiment_ok:
                     entry, direction = cl, signal.direction
                     sl = entry * (1 - sl_pct) if direction == 1 else entry * (1 + sl_pct)
                     tp = entry * (1 + tp_pct) if direction == 1 else entry * (1 - tp_pct)

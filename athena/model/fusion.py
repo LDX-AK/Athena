@@ -87,20 +87,52 @@ class SignalFusion:
 
     def __init__(self, config: Dict):
         flags = config.get("flags", {})
+        sentiment_cfg = config.get("sentiment", {})
         self.lgbm_weight      = flags.get("LGBM_WEIGHT",      0.70)
         self.sentiment_weight = flags.get("SENTIMENT_WEIGHT", 0.30)
-        self.sentiment_enabled = flags.get("SENTIMENT_ENABLED", True)
+        self.runtime_timeframe = str(config.get("runtime_timeframe") or config.get("timeframe", "1m"))
+        self.sentiment_min_timeframe = str(sentiment_cfg.get("min_timeframe", "30m"))
+        self.sentiment_mode = str(sentiment_cfg.get("mode", "weighted"))
+        self.sentiment_enabled = bool(flags.get("SENTIMENT_ENABLED", True))
+        self.sentiment_weighted_enabled = (
+            self.sentiment_enabled
+            and self.timeframe_allows_weighted_sentiment(
+                self.runtime_timeframe,
+                self.sentiment_min_timeframe,
+            )
+        )
         self.min_confidence   = config.get("risk", {}).get("min_confidence", 0.65)
 
         self.lgbm_model      = AthenaModel(config["model_path"])
         self.sentiment_model = SentimentSignal()
 
+        sentiment_state = "ON" if self.sentiment_weighted_enabled else (
+            "FILTER_ONLY" if self.sentiment_enabled else "OFF"
+        )
         logger.info(
             f"🔀 SignalFusion инициализирован: "
             f"LightGBM={self.lgbm_weight:.0%} | "
             f"Sentiment={self.sentiment_weight:.0%} "
-            f"({'ON' if self.sentiment_enabled else 'OFF'})"
+            f"({sentiment_state}, tf={self.runtime_timeframe}, min_tf={self.sentiment_min_timeframe})"
         )
+
+    @staticmethod
+    def _tf_to_minutes(tf: str) -> int:
+        tf = str(tf).strip().lower()
+        try:
+            if tf.endswith("m"):
+                return max(1, int(tf[:-1]))
+            if tf.endswith("h"):
+                return max(1, int(tf[:-1]) * 60)
+            if tf.endswith("d"):
+                return max(1, int(tf[:-1]) * 1440)
+        except ValueError:
+            pass
+        return 1
+
+    @classmethod
+    def timeframe_allows_weighted_sentiment(cls, runtime_tf: str, min_tf: str = "30m") -> bool:
+        return cls._tf_to_minutes(runtime_tf) >= cls._tf_to_minutes(min_tf)
 
     def predict(self, features: Dict, sentiment: Optional[Dict] = None) -> AthenaSignal:
         """
@@ -115,18 +147,18 @@ class SignalFusion:
 
         # ── Sentiment сигнал ──────────────────────────────────
         sent_score = 0.0
-        if self.sentiment_enabled and sentiment:
+        if self.sentiment_weighted_enabled and sentiment:
             sent_raw   = self.sentiment_model.predict(sentiment)
             sent_score = sent_raw.direction * sent_raw.confidence * self.sentiment_weight
-        elif not self.sentiment_enabled:
-            # Sentiment выключен → перераспределяем вес на LightGBM
+        elif not self.sentiment_weighted_enabled:
+            # Sentiment выключен или переведён в macro/filter-only режим → работаем на чистом LightGBM
             lgbm_score = lgbm_raw.direction * lgbm_raw.confidence
 
         # ── Fusion ────────────────────────────────────────────
         total_score = lgbm_score + sent_score
 
         # Максимально возможный score (для нормализации confidence)
-        if self.sentiment_enabled and sentiment:
+        if self.sentiment_weighted_enabled and sentiment:
             max_score = self.lgbm_weight + self.sentiment_weight  # = 1.0
         else:
             max_score = 1.0
@@ -180,8 +212,13 @@ class SignalFusion:
     def disable_sentiment(self):
         """Быстрое отключение sentiment (например при недоступности API)."""
         self.sentiment_enabled = False
+        self.sentiment_weighted_enabled = False
         logger.warning("⚠️  Sentiment отключён, работаем на чистом LightGBM")
 
     def enable_sentiment(self):
         self.sentiment_enabled = True
+        self.sentiment_weighted_enabled = self.timeframe_allows_weighted_sentiment(
+            self.runtime_timeframe,
+            self.sentiment_min_timeframe,
+        )
         logger.info("✅ Sentiment включён")

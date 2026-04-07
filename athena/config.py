@@ -38,10 +38,16 @@ ATHENA_CONFIG = {
     "timeframe":  "1m",
     "training_timeframe": "1m",
     "runtime_timeframe": "1m",
-    "tf_filter":  "15m",   # старший таймфрейм для фильтрации тренда
-    "mtf_timeframe": "15m",
+    "tf_filter":  "30m",   # старший таймфрейм для фильтрации тренда / подтверждения
+    "mtf_timeframe": "30m",
     "mtf_min_trend": 0.0015,
     "mtf_min_higher_candles": 12,
+    "timeframe_hierarchy": {
+        "context": "1h",
+        "confirm": "30m",
+        "signal": "15m",
+        "entry": "5m",
+    },
 
     # ─── ПУТИ К МОДЕЛЯМ ───────────────────────────────────────
     "model_path":          "athena/model/athena_brain.pkl",
@@ -181,7 +187,9 @@ ATHENA_CONFIG = {
 
     # ─── SENTIMENT РЕЖИМЫ (взвешивание или macro-gate) ─────
     "sentiment": {
-        "mode": "weighted",  # weighted | macro_gate
+        "mode": "macro_gate",  # weighted | macro_gate
+        "min_timeframe": "30m",
+        "filter_only_below_min_tf": True,
         "macro_horizon": "1h",
         "macro_min_samples": 4,
         "macro_buy_threshold": 0.08,
@@ -192,6 +200,7 @@ ATHENA_CONFIG = {
     # ─── STRATEGY FACTORY / ЭКСПЕРИМЕНТЫ ────────────────────
     "experiment": {
         "storage_path": "data/experiments",
+        "timeframe": "15m",
         "walk_forward": {
             "train_months": ["2025-04", "2025-05"],
             "validation_months": ["2025-06"],

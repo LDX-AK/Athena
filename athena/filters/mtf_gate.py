@@ -14,21 +14,33 @@ class MTFGate:
     def __init__(self, config: Dict):
         flags = config.get("flags", {})
         self.enabled = bool(flags.get("MTF_FILTER_ENABLED", True))
+        self.base_tf = str(config.get("runtime_timeframe") or config.get("timeframe", "1m"))
         self.higher_tf = str(config.get("mtf_timeframe", "15m"))
         self.min_trend = float(config.get("mtf_min_trend", 0.0015))
         self.min_higher_candles = int(config.get("mtf_min_higher_candles", 12))
 
-        self._ratio = self._tf_ratio(self.higher_tf)
+        self._ratio = self._tf_ratio(self.base_tf, self.higher_tf)
 
-    def _tf_ratio(self, tf: str) -> int:
-        # Supports Xm format, falls back to 15.
-        if tf.endswith("m"):
-            try:
-                value = int(tf[:-1])
-                return max(1, value)
-            except ValueError:
-                pass
+    @staticmethod
+    def _tf_to_minutes(tf: str) -> int:
+        tf = str(tf).strip().lower()
+        try:
+            if tf.endswith("m"):
+                return max(1, int(tf[:-1]))
+            if tf.endswith("h"):
+                return max(1, int(tf[:-1]) * 60)
+            if tf.endswith("d"):
+                return max(1, int(tf[:-1]) * 1440)
+        except ValueError:
+            pass
         return 15
+
+    def _tf_ratio(self, base_tf: str, higher_tf: str) -> int:
+        base_minutes = self._tf_to_minutes(base_tf)
+        higher_minutes = self._tf_to_minutes(higher_tf)
+        if higher_minutes <= base_minutes:
+            return 1
+        return max(1, int(round(higher_minutes / max(base_minutes, 1))))
 
     def _aggregate_to_higher_tf(self, ohlcv: List[List[float]]) -> List[List[float]]:
         ratio = self._ratio

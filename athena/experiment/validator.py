@@ -13,9 +13,22 @@ from .dataset import MonthlyDatasetManager
 class WalkForwardValidator:
     """Helper for loading time-based splits and evaluating saved models."""
 
-    def __init__(self, base_config: Dict, dataset_manager: MonthlyDatasetManager | None = None):
+    def __init__(
+        self,
+        base_config: Dict,
+        dataset_manager: MonthlyDatasetManager | None = None,
+        timeframe: str | None = None,
+    ):
         self.base_config = copy.deepcopy(base_config)
         self.dataset_manager = dataset_manager or MonthlyDatasetManager()
+        self.timeframe = str(
+            timeframe
+            or getattr(self.dataset_manager, "timeframe", None)
+            or self.base_config.get("experiment", {}).get("timeframe")
+            or self.base_config.get("training_timeframe")
+            or self.base_config.get("runtime_timeframe")
+            or self.base_config.get("timeframe", "15m")
+        )
 
     def load_splits(
         self,
@@ -34,9 +47,9 @@ class WalkForwardValidator:
     def profile_config(self, model_path: str | Path, profile: str = "conservative") -> Dict:
         cfg = copy.deepcopy(self.base_config)
         cfg["symbols"] = ["BTC/USDT"]
-        cfg["timeframe"] = "15m"
-        cfg["runtime_timeframe"] = "15m"
-        cfg["training_timeframe"] = "15m"
+        cfg["timeframe"] = self.timeframe
+        cfg["runtime_timeframe"] = self.timeframe
+        cfg["training_timeframe"] = self.timeframe
         cfg["flags"]["MTF_FILTER_ENABLED"] = False
         cfg["model_path"] = str(model_path)
 

@@ -37,9 +37,20 @@ class TestAthenaConfig(unittest.TestCase):
         self.assertIn("mtf_min_trend", ATHENA_CONFIG)
         self.assertIn("mtf_min_higher_candles", ATHENA_CONFIG)
 
-        self.assertTrue(str(ATHENA_CONFIG["mtf_timeframe"]).endswith("m"))
+        self.assertTrue(str(ATHENA_CONFIG["mtf_timeframe"]).endswith(("m", "h")))
         self.assertGreater(float(ATHENA_CONFIG["mtf_min_trend"]), 0.0)
         self.assertGreaterEqual(int(ATHENA_CONFIG["mtf_min_higher_candles"]), 2)
+
+    def test_timeframe_hierarchy_and_sentiment_policy_exist(self):
+        hierarchy = ATHENA_CONFIG.get("timeframe_hierarchy", {})
+        self.assertEqual(hierarchy.get("context"), "1h")
+        self.assertEqual(hierarchy.get("confirm"), "30m")
+        self.assertEqual(hierarchy.get("signal"), "15m")
+        self.assertEqual(hierarchy.get("entry"), "5m")
+
+        sentiment = ATHENA_CONFIG.get("sentiment", {})
+        self.assertEqual(sentiment.get("min_timeframe"), "30m")
+        self.assertIn(sentiment.get("mode"), {"weighted", "macro_gate"})
 
 
 if __name__ == "__main__":

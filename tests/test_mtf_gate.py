@@ -50,6 +50,19 @@ class TestMTFGate(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "mtf-insufficient-data")
 
+    def test_uses_relative_ratio_for_15m_to_30m(self):
+        cfg = self._config()
+        cfg["timeframe"] = "15m"
+        cfg["runtime_timeframe"] = "15m"
+        cfg["mtf_timeframe"] = "30m"
+        gate = MTFGate(cfg)
+
+        ohlcv = self._ohlcv(0.0008, count=12)
+        aggregated = gate._aggregate_to_higher_tf(ohlcv)
+
+        self.assertEqual(gate._ratio, 2)
+        self.assertEqual(len(aggregated), 6)
+
 
 if __name__ == "__main__":
     unittest.main()

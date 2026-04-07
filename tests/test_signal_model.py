@@ -10,6 +10,7 @@ from sklearn.linear_model import LogisticRegression
 
 from athena.config import ATHENA_CONFIG
 from athena.features.engineer import AthenaEngineer
+from athena.model.fusion import SignalFusion
 from athena.model.signal import AthenaModel, AthenaSignal, AthenaTrainer
 
 
@@ -96,6 +97,12 @@ class TestAthenaTrainingConfig(unittest.TestCase):
         self.assertEqual(params["max_depth"], 4)
         self.assertEqual(params["min_child_samples"], 100)
         self.assertEqual(params["n_estimators"], 120)
+
+    def test_weighted_sentiment_is_limited_to_higher_timeframes(self):
+        self.assertFalse(SignalFusion.timeframe_allows_weighted_sentiment("5m", "30m"))
+        self.assertFalse(SignalFusion.timeframe_allows_weighted_sentiment("15m", "30m"))
+        self.assertTrue(SignalFusion.timeframe_allows_weighted_sentiment("30m", "30m"))
+        self.assertTrue(SignalFusion.timeframe_allows_weighted_sentiment("1h", "30m"))
 
     def test_create_labels_uses_atr_mode_when_enabled(self):
         cfg = copy.deepcopy(ATHENA_CONFIG)

@@ -122,7 +122,10 @@ async def run(
     logger.info("⚡ ═══════════════════════════════════════")
 
     sentiment = AthenaSentiment(cfg)
-    engineer  = AthenaEngineer(cfg)
+    try:
+        engineer = AthenaEngineer(cfg)
+    except TypeError:
+        engineer = AthenaEngineer()
 
     # ── Режимы запуска ────────────────────────────────────────
     if mode == "train":

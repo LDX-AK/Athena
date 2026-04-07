@@ -25,9 +25,10 @@ MODEL_DIR = ROOT / "athena" / "model"
 
 def main() -> None:
     base_cfg = ATHENA_CONFIG
-    dataset = MonthlyDatasetManager(ROOT / "data" / "raw" / "ohlcv")
+    timeframe = str(base_cfg.get("experiment", {}).get("timeframe", "15m"))
+    dataset = MonthlyDatasetManager(ROOT / "data" / "raw" / "ohlcv", timeframe=timeframe)
     registry = ExperimentRegistry(base_cfg.get("experiment", {}).get("storage_path", ROOT / "data" / "experiments"))
-    validator = WalkForwardValidator(base_cfg, dataset)
+    validator = WalkForwardValidator(base_cfg, dataset, timeframe=timeframe)
     ablation = AblationMatrix(base_cfg)
 
     walk = base_cfg.get("experiment", {}).get("walk_forward") or base_cfg.get("training", {}).get("walk_forward", {})
@@ -43,19 +44,19 @@ def main() -> None:
     requested_scenarios = ["baseline", "no_rolling", "no_sentiment", "no_rolling_sentiment", "no_regime", "minimal"]
     scenario_plan = ablation.unique_scenarios(requested_scenarios)
     results = {}
-    out_path = RESULTS_DIR / "ablation_matrix_15m.json"
+    out_path = RESULTS_DIR / f"ablation_matrix_{timeframe}.json"
 
     for scenario_name, disabled_groups in scenario_plan.items():
         cfg = ablation.apply_scenario(scenario_name)
         cfg["symbols"] = ["BTC/USDT"]
-        cfg["timeframe"] = "15m"
-        cfg["runtime_timeframe"] = "15m"
-        cfg["training_timeframe"] = "15m"
+        cfg["timeframe"] = timeframe
+        cfg["runtime_timeframe"] = timeframe
+        cfg["training_timeframe"] = timeframe
         cfg["flags"]["SENTIMENT_ENABLED"] = False
         cfg["flags"]["SENTIMENT_BACKTEST"] = False
         cfg["flags"]["MTF_FILTER_ENABLED"] = False
 
-        model_path = MODEL_DIR / f"athena_brain_15m_{scenario_name}.pkl"
+        model_path = MODEL_DIR / f"athena_brain_{timeframe}_{scenario_name}.pkl"
         trainer = AthenaTrainer(AthenaEngineer(cfg), cfg)
         trainer.train(dataset.to_ohlcv_list(train_df), save_path=str(model_path))
 
