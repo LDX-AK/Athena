@@ -63,7 +63,7 @@ def run_case(sentiment_on: bool, profile: str) -> dict:
     from athena.features.engineer import AthenaEngineer
 
     cfg = make_cfg(sentiment_on=sentiment_on, profile=profile)
-    engineer = AthenaEngineer()
+    engineer = AthenaEngineer(cfg)
     sentiment = AthenaSentiment(cfg)
     backtest = AthenaBacktest(engineer, sentiment, cfg)
     ohlcv = load_ohlcv_from_csv(str(locate_csv()), symbol=None, max_rows=1500, window="first")

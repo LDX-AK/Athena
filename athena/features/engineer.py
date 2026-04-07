@@ -25,13 +25,19 @@ _META_KEYS = {"_symbol", "_exchange", "_last_price"}
 
 
 class AthenaEngineer:
-    def __init__(self):
+    def __init__(self, config: Optional[Dict[str, Any]] = None):
+        self.config = config or {}
         self.ema_periods = [9, 21, 50]
         self.rsi_period  = 14
         self.bb_period   = 20
         self.atr_period  = 14
-        # Multi-horizon окна из DRW Kaggle решения
-        self.windows     = [5, 10, 15, 30, 60, 120]
+        # Multi-horizon окна можно переопределить из config для ablation / walk-forward экспериментов
+        windows = self.config.get("data", {}).get("windows", [5, 10, 15, 30, 60, 120])
+        self.windows = [int(w) for w in windows]
+
+    def _group_enabled(self, name: str) -> bool:
+        groups = self.config.get("feature_groups", {})
+        return bool(groups.get(name, True))
 
     def transform(self, batch: Dict[str, Any]) -> Optional[Dict[str, float]]:
         ohlcv     = batch.get("ohlcv", [])
@@ -48,38 +54,48 @@ class AthenaEngineer:
         features = {}
 
         # ── БЛОК 1: Ценовые фичи ──────────────────────────────
-        features.update(self._price_features(df))
+        if self._group_enabled("price"):
+            features.update(self._price_features(df))
 
         # ── БЛОК 2: Классические индикаторы ───────────────────
-        features.update(self._indicators(df))
+        if self._group_enabled("indicators"):
+            features.update(self._indicators(df))
 
         # ── БЛОК 3: Order Book (наши оригинальные) ────────────
-        features.update(self._orderbook_features(orderbook))
+        if self._group_enabled("orderbook"):
+            features.update(self._orderbook_features(orderbook))
 
         # ── БЛОК 4: DRW Kaggle — Order Flow Dynamics ──────────
         # "Order imbalance consistently ranks in top-10 features"
-        features.update(self._order_flow_features(df, orderbook))
+        if self._group_enabled("orderflow"):
+            features.update(self._order_flow_features(df, orderbook))
 
         # ── БЛОК 5: DRW Kaggle — Multi-Horizon Returns ────────
-        features.update(self._multi_horizon_features(df))
+        if self._group_enabled("multihorizon"):
+            features.update(self._multi_horizon_features(df))
 
         # ── БЛОК 6: DRW Kaggle — Market Regime Interactions ───
-        features.update(self._regime_interactions(df, orderbook))
+        if self._group_enabled("regime"):
+            features.update(self._regime_interactions(df, orderbook))
 
         # ── БЛОК 7: G-Research — Rolling Stats + Momentum ─────
-        features.update(self._rolling_stats(df))
+        if self._group_enabled("rolling"):
+            features.update(self._rolling_stats(df))
 
         # ── БЛОК 8: Volatility Regime (для PPO state) ─────────
-        features.update(self._volatility_regime(df))
+        if self._group_enabled("volatility"):
+            features.update(self._volatility_regime(df))
 
         # ── БЛОК 9: Volume dynamics (DRW) ─────────────────────
-        features.update(self._volume_dynamics(df))
+        if self._group_enabled("volume"):
+            features.update(self._volume_dynamics(df))
 
         # ── БЛОК 10: Временные фичи ───────────────────────────
-        features.update(self._time_features(df))
+        if self._group_enabled("time"):
+            features.update(self._time_features(df))
 
         # ── БЛОК 11: Sentiment (если есть данные) ─────────────
-        if sentiment:
+        if sentiment and self._group_enabled("sentiment"):
             features.update(self._sentiment_features(sentiment))
 
         # Мета-поля для роутера

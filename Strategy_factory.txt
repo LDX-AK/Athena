@@ -1,0 +1,430 @@
+
+
+Если хочешь, я сразу продолжу следующий этап без паузы: сделаю автоматическую ablation-матрицу по группам фич и прогоню новые кандидаты тем же walk-forward способом.
+
+Второй пилот как всегда предлагает, а я как всегда хочу больше (Жадность не порок!)
+
+Придумал новую надстройку для бота, надо развить и систематизировать мысль.У тебя получится лучше всего.
+
+Добавить в модель для тестов в бот и дашбоард отдельный тестовый управляющий API модуль с возможностью запоминания и сохранения созданной модели pkl мозга (в отдельной папке), и сохранения логов результатов тестов, сброса и изменения разных параметров бота, и признаков (по основным и дополнительным группам) для нахождения наилучших стратегий на разных временных отрезках торговли. Такая приспособа существенно секономит мне платные запросы на тесты второго пилота, да и на дашборд с картинками смотреть намного круче чем просто пялится в монитор когда он гоняет тесты. Сам хочу!
+
+Честная временная валидация для тестов.
+
+Датасеты
+
+Год,(разные годовые отрезки), дальше модель по временным месячным отрезкам
+
+Добавлено в config.py:
+
+"walk_forward": {  "train_months": ["2025-04", "2025-05"],  "validation_months": ["2025-06"],  "test_months": ["2025-07", "2025-08", "2025-09"],}
+
+Новые файлы
+fetch_15m_monthly.py
+Качает помесячные 15m CSV с Binance.
+
+run_walkforward_15m.py
+Запускает строгую схему:
+
+train: Apr–May 2025
+validation: June 2025
+test/holdout: Jul–Sep 2025
+
+Твоя жадность — это двигатель прогресса. Ты не хочешь "просто работающего бота", ты хочешь фабрику по производству стратегий. Это правильный путь.
+
+Copilot предлагает очередной тест, а ты хочешь систему. Я тебя услышал.
+
+Давай превратим твою идею в архитектуру "Test & Strategy Factory".
+🧠 Концепция: Athena Strategy Factory (ASF)
+
+Не просто "тестовый модуль", а полноценная R&D-платформа внутри бота.
+Три слоя новой системы
+Слой	Назначение	Компоненты
+1. Data Layer	Управление датасетами	Помесячные CSV, автоматическая подкачка, train/val/test сплиттер
+2. Experiment Layer	Запуск и отслеживание тестов	Ablation-матрица, walk-forward, сохранение метрик, версионирование моделей
+3. Control Layer	Управление через дашборд	Выбор групп фич, переключение моделей, сравнение результатов, графики
+🏗️ Архитектура (что добавляем в проект)
+1. Новые модули
+python
+
+# athena/experiment/__init__.py
+# - manager.py       # главный контроллер экспериментов
+# - dataset.py       # загрузка и сплиттинг месячных данных
+# - ablation.py      # автоматическая матрица по группам фич
+# - registry.py      # сохранение/загрузка моделей и метрик
+# - validator.py     # walk-forward валидатор
+
+# athena/monitor/experiment_dashboard.py  # страница в Streamlit
+# scripts/run_ablation_matrix.py          # CLI для запуска матрицы
+
+2. Структура хранения
+text
+
+data/
+├── raw/
+│   └── 15m/
+│       ├── BTCUSDT_15m_2025_04.csv
+│       ├── BTCUSDT_15m_2025_05.csv
+│       └── ...
+├── experiments/
+│   ├── models/
+│   │   ├── 20250405_deepseek_like_v1.pkl
+│   │   ├── 20250405_rolling_off_v2.pkl
+│   │   └── metadata.json           # версионирование
+│   └── results/
+│       ├── ablation_20250405.json
+│       ├── walkforward_20250405.json
+│       └── logs/
+│           └── experiment_20250405.log
+
+🔧 Реализация (по шагам)
+Шаг 1: Data Layer — месячный датасет-менеджер
+python
+
+# athena/experiment/dataset.py
+class MonthlyDatasetManager:
+    def __init__(self, base_path="data/raw/15m"):
+        self.base_path = Path(base_path)
+    
+    def list_available_months(self, symbol="BTCUSDT") -> List[str]:
+        """Возвращает список доступных месяцев по файлам"""
+        pattern = f"{symbol}_15m_*.csv"
+        files = self.base_path.glob(pattern)
+        months = [f.stem.split("_")[-1] for f in files]
+        return sorted(months)
+    
+    def load_month(self, month: str, symbol="BTCUSDT") -> pd.DataFrame:
+        """Загружает один месяц"""
+        path = self.base_path / f"{symbol}_15m_{month}.csv"
+        return pd.read_csv(path)
+    
+    def load_period(self, months: List[str], symbol="BTCUSDT") -> pd.DataFrame:
+        """Загружает несколько месяцев подряд"""
+        dfs = [self.load_month(m, symbol) for m in months]
+        return pd.concat(dfs, ignore_index=True)
+    
+    def train_val_test_split(self, train_months, val_months, test_months):
+        """Честное временное разделение"""
+        return (
+            self.load_period(train_months),
+            self.load_period(val_months),
+            self.load_period(test_months),
+        )
+
+Шаг 2: Ablation Matrix — автоматическое тестирование групп фич
+python
+
+# athena/experiment/ablation.py
+class AblationMatrix:
+    """
+    Тестирует комбинации групп фич.
+    Группы фич из engineer.py:
+    - price: ценовые фичи
+    - indicators: RSI, MACD, BB и т.д.
+    - orderbook: OBI, spread
+    - orderflow: trade_imbalance, execution_ratio
+    - multi_horizon: ret_5m, vol_5m и т.д.
+    - regime: vol_regime, atr_x_vol
+    - rolling_stats: rolling_mean, sharpe, skew
+    - volume_dynamics: vol_ratio, vol_zscore
+    - time: hour_sin, dow_sin, session
+    """
+    
+    GROUPS = {
+        "price": ["ret_1", "ret_2", "ret_3", "ret_5", "ret_10", "ret_20", 
+                  "price_pos_20", "price_pos_60"],
+        "indicators": ["rsi", "rsi_slope", "bb_pos", "bb_width", "macd_hist", 
+                       "stoch_k", "ema_9_dist", "ema_21_dist"],
+        "orderbook": ["ob_imb_5", "ob_imb_20", "spread", "ba_ratio", "ob_pressure"],
+        "orderflow": ["trade_imbalance", "execution_ratio", "total_liquidity"],
+        "multi_horizon": ["ret_5m", "vol_5m", "ret_15m", "vol_15m", "ret_30m", "vol_30m"],
+        "regime": ["vol_regime", "atr_x_vol", "vol_x_imbalance"],
+        "rolling_stats": ["rolling_sharpe_10", "rolling_sharpe_30", "rolling_skew_10"],
+        "volume_dynamics": ["vol_ratio_5", "vol_zscore_5", "vol_momentum_5"],
+        "time": ["hour_sin", "dow_sin", "london_open", "ny_open", "weekend"],
+    }
+    
+    def __init__(self, config, engineer, trainer):
+        self.config = config
+        self.engineer = engineer
+        self.trainer = trainer
+        self.results = {}
+    
+    def run(self, train_df, val_df, test_df, base_name="ablation"):
+        """Запускает все комбинации выключенных групп"""
+        scenarios = self._generate_scenarios()
+        
+        for name, disabled_groups in scenarios.items():
+            print(f"\n🏃 Testing: {name}")
+            
+            # Отключаем указанные группы фич
+            self.engineer.disabled_feature_groups = disabled_groups
+            
+            # Обучаем модель на train
+            model = self.trainer.train_on_df(train_df, val_df)
+            
+            # Тестируем на test
+            metrics = self.trainer.evaluate_on_df(model, test_df)
+            
+            self.results[name] = {
+                "disabled_groups": disabled_groups,
+                "metrics": metrics,
+                "model_path": f"models/{base_name}_{name}.pkl"
+            }
+            
+            # Сохраняем модель
+            self.trainer.save_model(model, self.results[name]["model_path"])
+        
+        return self.results
+    
+    def _generate_scenarios(self):
+        """Генерирует сценарии: baseline, each_off, all_off"""
+        scenarios = {
+            "baseline": [],  # ничего не отключено
+            "all_on": [],    # дубль baseline для ясности
+        }
+        
+        # По одной группе отключаем
+        for group in self.GROUPS.keys():
+            scenarios[f"no_{group}"] = [group]
+        
+        # Ключевые комбинации (как ты и хотел)
+        scenarios["no_rolling"] = ["rolling_stats"]
+        scenarios["no_sentiment"] = ["sentiment"]  # если есть
+        scenarios["no_rolling_sentiment"] = ["rolling_stats", "sentiment"]
+        scenarios["no_regime"] = ["regime"]
+        scenarios["minimal"] = ["price", "indicators", "orderbook"]  # только базовое
+        
+        return scenarios
+
+Шаг 3: Experiment Registry — сохранение всего
+python
+
+# athena/experiment/registry.py
+class ExperimentRegistry:
+    def __init__(self, storage_path="data/experiments"):
+        self.storage = Path(storage_path)
+        self.models_dir = self.storage / "models"
+        self.results_dir = self.storage / "results"
+        self.models_dir.mkdir(parents=True, exist_ok=True)
+        self.results_dir.mkdir(parents=True, exist_ok=True)
+    
+    def save_experiment(self, name: str, results: Dict, model=None):
+        """Сохраняет полный результат эксперимента"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        exp_id = f"{timestamp}_{name}"
+        
+        # Сохраняем метрики
+        results_path = self.results_dir / f"{exp_id}.json"
+        with open(results_path, "w") as f:
+            json.dump(results, f, indent=2)
+        
+        # Сохраняем модель (если есть)
+        if model:
+            model_path = self.models_dir / f"{exp_id}.pkl"
+            with open(model_path, "wb") as f:
+                pickle.dump(model, f)
+        
+        # Обновляем метаданные
+        self._update_metadata(exp_id, name, results_path, model_path if model else None)
+        
+        return exp_id
+    
+    def load_model(self, exp_id: str):
+        """Загружает модель по ID эксперимента"""
+        model_path = self.models_dir / f"{exp_id}.pkl"
+        with open(model_path, "rb") as f:
+            return pickle.load(f)
+    
+    def compare_experiments(self, exp_ids: List[str]) -> pd.DataFrame:
+        """Сравнивает несколько экспериментов по Sharpe, PF, Return"""
+        rows = []
+        for exp_id in exp_ids:
+            results_path = self.results_dir / f"{exp_id}.json"
+            with open(results_path) as f:
+                data = json.load(f)
+            rows.append({
+                "exp_id": exp_id,
+                "sharpe": data.get("sharpe_ratio", 0),
+                "profit_factor": data.get("profit_factor", 0),
+                "return_pct": data.get("total_return_pct", 0),
+                "win_rate": data.get("win_rate", 0),
+                "max_dd": data.get("max_drawdown_pct", 0),
+            })
+        return pd.DataFrame(rows)
+
+Шаг 4: Experiment Dashboard — новая страница в Streamlit
+python
+
+# athena/monitor/experiment_dashboard.py
+import streamlit as st
+from athena.experiment.registry import ExperimentRegistry
+from athena.experiment.ablation import AblationMatrix
+
+st.set_page_config(page_title="Athena Strategy Factory", layout="wide")
+st.title("🧪 Athena Strategy Factory")
+
+registry = ExperimentRegistry()
+
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🏃 Run Experiment", 
+    "📊 Compare Models", 
+    "📈 Ablation Matrix",
+    "📁 Model Zoo"
+])
+
+with tab1:
+    st.subheader("New Experiment")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        train_months = st.multiselect("Train months", 
+            ["2025-04", "2025-05", "2025-06", "2025-07"], 
+            default=["2025-04", "2025-05"])
+        val_months = st.multiselect("Validation months", 
+            ["2025-06"], default=["2025-06"])
+        test_months = st.multiselect("Test months", 
+            ["2025-07", "2025-08", "2025-09"], 
+            default=["2025-07", "2025-08", "2025-09"])
+    
+    with col2:
+        feature_groups = st.multiselect("Feature groups to disable", 
+            ["rolling_stats", "regime", "multi_horizon", "volume_dynamics"],
+            default=[])
+        model_params = {
+            "num_leaves": st.slider("num_leaves", 5, 50, 15),
+            "max_depth": st.slider("max_depth", 3, 10, 4),
+        }
+    
+    if st.button("🚀 Run Walk-Forward", type="primary"):
+        with st.spinner("Running..."):
+            # Запускаем эксперимент
+            # ... код запуска ...
+            st.success(f"Experiment saved: {exp_id}")
+
+with tab2:
+    st.subheader("Compare Models")
+    
+    # Список доступных экспериментов
+    experiments = registry.list_experiments()
+    selected = st.multiselect("Select experiments to compare", experiments)
+    
+    if selected:
+        df = registry.compare_experiments(selected)
+        st.dataframe(df)
+        
+        # Графики
+        st.bar_chart(df.set_index("exp_id")[["sharpe", "profit_factor"]])
+
+with tab3:
+    st.subheader("Ablation Matrix Results")
+    
+    # Загружаем последнюю ablation-матрицу
+    ablation_path = Path("data/experiments/results/latest_ablation.json")
+    if ablation_path.exists():
+        with open(ablation_path) as f:
+            ablation_results = json.load(f)
+        
+        # Таблица
+        rows = []
+        for name, data in ablation_results.items():
+            rows.append({
+                "Scenario": name,
+                "Sharpe": data["metrics"].get("sharpe_ratio", 0),
+                "PF": data["metrics"].get("profit_factor", 0),
+                "Return %": data["metrics"].get("total_return_pct", 0),
+                "Disabled Groups": ", ".join(data.get("disabled_groups", [])),
+            })
+        st.dataframe(pd.DataFrame(rows))
+        
+        # Лучший сценарий
+        best = max(rows, key=lambda x: x["Sharpe"])
+        st.success(f"🏆 Best scenario: **{best['Scenario']}** (Sharpe={best['Sharpe']:.2f})")
+    else:
+        st.info("No ablation results yet. Run an experiment first.")
+
+with tab4:
+    st.subheader("Model Zoo")
+    
+    models = registry.list_models()
+    for model in models:
+        with st.expander(f"🧠 {model['id']}"):
+            st.json(model["metadata"])
+            if st.button(f"Load {model['id']}", key=model['id']):
+                # Загружаем модель в runtime
+                st.session_state['active_model'] = model['id']
+                st.success(f"Model {model['id']} loaded for paper trading")
+
+Шаг 5: Обновление config.py
+python
+
+# Добавить в ATHENA_CONFIG
+
+"experiment": {
+    "storage_path": "data/experiments",
+    "walk_forward": {
+        "train_months": ["2025-04", "2025-05"],
+        "validation_months": ["2025-06"],
+        "test_months": ["2025-07", "2025-08", "2025-09"],
+    },
+    "ablation": {
+        "enabled": True,
+        "groups": ["rolling_stats", "regime", "multi_horizon", "volume_dynamics"],
+    },
+    "model_registry": {
+        "max_versions": 50,
+        "auto_save_best": True,
+        "best_metric": "sharpe_ratio",
+    },
+},
+
+# Добавить в training секцию
+"training": {
+    "feature_groups": {
+        "price": True,
+        "indicators": True,
+        "orderbook": True,
+        "orderflow": True,
+        "multi_horizon": True,
+        "regime": True,
+        "rolling_stats": True,
+        "volume_dynamics": True,
+        "time": True,
+    },
+    "model_params": {
+        "num_leaves": 15,
+        "max_depth": 4,
+        "min_child_samples": 100,
+        "learning_rate": 0.05,
+        "n_estimators": 200,
+    },
+    "atr_labeling": {
+        "enabled": True,
+        "threshold_mult": 0.5,
+        "atr_period": 14,
+    },
+},
+
+📋 Что ты получаешь после внедрения
+Возможность	Как работает	Экономия
+Ablation matrix	Автоматически тестирует комбинации фич	Не нужно гадать, что отключить
+Walk-forward валидация	Чёткое разделение train/val/test	Честная оценка без lookahead
+Model Zoo	Сохраняет все модели с метаданными	Можно откатиться к любой
+Сравнение моделей	Таблицы и графики в дашборде	Видно, что лучше
+CLI + Dashboard	Управление из терминала и UI	Гибкость
+🚀 Следующий шаг
+
+Скажи Copilot'у:
+
+    "Отличная работа по тестам и walk-forward. Теперь внедряем Athena Strategy Factory:
+
+        Добавь athena/experiment/ с модулями выше
+
+        Обнови config.py секцией experiment и training
+
+        Добавь страницу experiment_dashboard.py в Streamlit
+
+        Запусти ablation matrix на группах фич, результат в data/experiments/results/
+
+    Цель: найти конфигурацию, которая даёт на holdout (Jul-Sep 2025) Sharpe > 0.5. После этого запускаем paper."
+
+Ты перестаёшь быть просто пользователем Copilot. Ты становишься CIO своей собственной R&D-лаборатории. И это круто. 🧪🚀

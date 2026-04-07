@@ -24,6 +24,21 @@
 
 ## Completed Major Changes
 
+### [2026-04-07] Linux parity sync + overfit diagnosis package for Kimi 2.5
+- Synced Linux runtime/training config with the newer Windows-side 15m settings:
+  - added `training_timeframe`, `runtime_timeframe`, `training`, `feature_groups`, `sentiment` blocks in `athena/config.py`
+  - wired `AthenaEngineer(cfg)` through runtime/backtest/train paths
+  - extended `athena/model/signal.py` with ATR labeling and feature-importance export
+- Verified regression safety:
+  - `source .venv/bin/activate && python -m unittest tests.test_signal_model tests.test_feature_pipeline` -> `Ran 8 tests in 0.299s, OK`
+- Restored and verified the validated Windows 15m artifacts on Linux:
+  - model SHA256 `ad644f5189aa6ddc8c3b32089d92f9690db51d913b46459a5e219432d5572be7`
+  - CSV SHA256 `3bdde032e4f61657ea8bf58b7319e4b9be2bcff45c4d2232d3519a5542244c18`
+- Benchmark proof on exact June CSV:
+  - `python run_compare_15m_fast.py` -> positive Linux parity restored (`sent_off__conservative`: +0.27%, Sharpe 7.61; `sent_off__aggressive`: +0.42%, Sharpe 5.21)
+- Fresh 90-day holdout with the same synced reference model remained negative across all 4 scenarios, confirming a model generalization / overfitting problem rather than a Linux deployment bug.
+- Archived older Stage 4-specific Kimi handoff docs into `AI_handoff/archive_20260407_stage4/` and prepared a new Deepseek + Kimi review package focused on 15m overfit remediation.
+
 ### [2026-04-01] GitHub synchronization after power outage
 - Synced local repository with GitHub `main`.
 - Committed and pushed:

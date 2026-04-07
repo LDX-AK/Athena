@@ -1,3 +1,4 @@
+import copy
 import pickle
 import tempfile
 import unittest
@@ -69,6 +70,66 @@ class TestAthenaTrainerLookback(unittest.TestCase):
         trainer = AthenaTrainer(AthenaEngineer(), ATHENA_CONFIG)
         lookback = trainer._feature_lookback()
         self.assertGreaterEqual(lookback, max(trainer.engineer.windows) + 10)
+
+
+class TestAthenaTrainingConfig(unittest.TestCase):
+    def test_config_exposes_training_and_feature_group_sections(self):
+        self.assertIn("training", ATHENA_CONFIG)
+        self.assertEqual(ATHENA_CONFIG["training"]["labeling_mode"], "atr")
+        self.assertIn("feature_groups", ATHENA_CONFIG)
+        self.assertTrue(ATHENA_CONFIG["feature_groups"]["sentiment"])
+        self.assertEqual(ATHENA_CONFIG["training_timeframe"], ATHENA_CONFIG["timeframe"])
+        self.assertEqual(ATHENA_CONFIG["runtime_timeframe"], ATHENA_CONFIG["timeframe"])
+
+    def test_model_params_can_be_overridden_from_config(self):
+        cfg = copy.deepcopy(ATHENA_CONFIG)
+        cfg.setdefault("training", {})["model_params"] = {
+            "num_leaves": 15,
+            "max_depth": 4,
+            "min_child_samples": 100,
+            "n_estimators": 120,
+        }
+        trainer = AthenaTrainer(AthenaEngineer(cfg), cfg)
+        params = trainer._model_params()
+
+        self.assertEqual(params["num_leaves"], 15)
+        self.assertEqual(params["max_depth"], 4)
+        self.assertEqual(params["min_child_samples"], 100)
+        self.assertEqual(params["n_estimators"], 120)
+
+    def test_create_labels_uses_atr_mode_when_enabled(self):
+        cfg = copy.deepcopy(ATHENA_CONFIG)
+        cfg.setdefault("training", {})
+        cfg["training"].update(
+            {
+                "labeling_mode": "atr",
+                "label_lookahead": 4,
+                "atr_period": 3,
+                "atr_tp_mult": 0.8,
+                "atr_sl_mult": 0.4,
+            }
+        )
+        trainer = AthenaTrainer(AthenaEngineer(cfg), cfg)
+        df = pd.DataFrame(
+            {
+                "open": np.linspace(100.0, 110.0, 20),
+                "high": np.linspace(100.4, 110.6, 20),
+                "low": np.linspace(99.6, 109.4, 20),
+                "close": np.linspace(100.0, 110.0, 20),
+                "volume": np.linspace(10.0, 30.0, 20),
+            }
+        )
+
+        labels = trainer.create_labels(df, tp_pct=0.25, sl_pct=0.25, lookahead=4)
+        expected = trainer.create_labels_atr(
+            df,
+            lookahead=4,
+            atr_period=3,
+            atr_tp_mult=0.8,
+            atr_sl_mult=0.4,
+        )
+
+        pd.testing.assert_series_equal(labels, expected)
 
 
 if __name__ == "__main__":

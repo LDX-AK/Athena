@@ -1,99 +1,61 @@
-# Athena v2 -> Kimi Review Package
+# Athena v2 -> Kimi 2.5 Review Package
 
-## Context
-This folder was prepared to simplify direct review by Kimi.
-Included files:
-- Athena_TZ.md
-- change_history.md
-- drift_monitor.py
-- retrain_policy.py
-- router.py (with confidence propagation)
+## Focus of this handoff
+This package is **no longer about Stage 4 telemetry**.  
+The current issue is the 15m model's **poor generalization on fresh data**.
 
-## What changed (short)
-1. Drift monitor was upgraded from simple threshold checks to richer drift detection:
-- baseline capture on first full window
-- relative drift checks (winrate/sharpe/confidence)
-- volatility regime alert
-- consecutive loss streak alert
-- alert codes + reasons for traceability
+## Short context
+We completed a Linux parity sync with the previously validated Windows-side setup.
+That restored the old positive June benchmark, but the same model still fails on a fresh ~90 day holdout.
 
-2. Retrain policy now includes hysteresis/safety:
-- cooldown between retrains
-- weekly retrain budget
-- critical-alert quorum before drift retrain
-- dry-run mode retained for safe rollout
+## Verified facts
+- Linux regression tests pass:
+  - `python -m unittest tests.test_signal_model tests.test_feature_pipeline` -> `Ran 8 tests in 0.299s, OK`
+- Exact June benchmark is positive again.
+- Fresh 90d holdout remains negative in all 4 scenarios.
 
-3. Execution router now propagates `confidence` into trade results,
-so drift logic can analyze confidence decay on closed trades.
+## External opinions collected so far
+### Deepseek says
+- the model is overfit to June 2025,
+- we should simplify the model,
+- reduce features,
+- add a runtime fallback,
+- and validate with strict time splits.
 
-## Answers to current edge-case questions
+### Copilot says
+- the diagnosis is mostly correct,
+- but no current mode is actually ready for paper/live,
+- ATR / TP-SL-style labels are already partly implemented,
+- the next loop should emphasize walk-forward validation and feature ablation.
 
-### 1) Baseline behavior on first run (before N trades)
-Current behavior:
-- if trade history length < `window_trades`: no drift evaluation
-- once first full window is available, monitor captures baseline snapshot and returns `baseline-captured`
-- drift is not triggered on that same baseline-capture pass
+## Please review
+Send these files individually in this order:
+1. `consolidated_15m_overfit_for_kimi.md`
+2. `from_deepseek/answer2.md`
+3. `copilot_review_deepseek_answer2.md`
+4. `from_kimi/project_snapshot/README.md`
+5. `from_kimi/project_snapshot/athena/config.py`
+6. `from_kimi/project_snapshot/athena/features/engineer.py`
+7. `from_kimi/project_snapshot/athena/model/signal.py`
+8. `from_kimi/project_snapshot/athena/model/drift_monitor.py`
+9. `from_kimi/project_snapshot/athena/model/retrain_policy.py`
+10. `from_kimi/project_snapshot/athena/risk/manager.py`
+11. `from_kimi/project_snapshot/train_model_tf.py`
+12. `from_kimi/project_snapshot/run_compare_15m_fast.py`
+13. `from_kimi/project_snapshot/tests/test_signal_model.py`
+14. `from_kimi/project_snapshot/data/results/backtest_15m_comparison.json`
+15. `from_kimi/project_snapshot/data/results/backtest_15m_holdout_90d_windows_ref.json`
+16. `change_history.md`
+17. `delta_summary.md`
 
-Interpretation:
-- safe cold-start, no false retrain spikes during startup
+## Important note
+Do not refer to a whole folder when sending to Kimi.
+Send only the individual files listed above.
 
-Potential improvement (optional):
-- persist baseline across restarts (JSON metadata), so reboot does not reset baseline learning phase.
-
-### 2) Simultaneous loss streak + volatility regime
-Current behavior:
-- both alert codes are emitted in one evaluation cycle
-- `alerts_in_row` increments once per cycle (not once per alert)
-- retrain policy checks critical-alert quorum using unique alert set
-
-Impact:
-- this combination is treated as stronger signal than single-alert drift
-- with current policy it can satisfy critical condition in one cycle,
-then trigger retrain when cooldown/budget allow
-
-Potential improvement (optional):
-- add severity scoring to alerts (e.g., LOSS_STREAK=2, REGIME_VOLATILITY=2) for graded decisions.
-
-### 3) Cooldown under sharp regime change
-Current behavior:
-- cooldown blocks immediate retrain even if drift is severe
-- this avoids retrain spam but can delay reaction to abrupt regime shifts
-
-Risk:
-- important retrain window may be missed in extreme volatility transitions
-
-Suggested patch:
-- add emergency bypass rule:
-  - if `LOSS_STREAK` + `REGIME_VOLATILITY` + `SHARPE_DRIFT` co-occur
-  - and magnitude exceeds hard threshold
-  - allow one cooldown override retrain (rate-limited to 1 per X hours)
-
-## Requested review focus for Kimi
-Please review these files for edge cases and policy quality:
-- drift_monitor.py
-- retrain_policy.py
-- router.py
-
-Questions to review:
-1. Is baseline cold-start logic robust enough for sparse trade periods?
-2. Is critical-alert quorum sufficient, or should weighted severity be used?
-3. Should cooldown bypass be introduced for extreme regime breaks?
-4. Any obvious failure mode in confidence propagation from router -> trade_history?
-
-## Notes
-This package is a copy for review handoff.
-Source of truth remains in the main project paths under `athena/`.
-
-## Update after your last edge-case review
-Implemented now (P0):
-- confidence fallback fixed (`None` instead of `0.0` for legacy positions)
-- Sharpe guard for tiny std (`std < 1e-6 => sharpe=0.0`)
-- confidence coverage guard in drift monitor (skip confidence drift on sparse confidence data)
-- emergency retrain bypass for severe regime breaks with its own emergency rate limit
-- added unit tests for retrain policy emergency behavior
-
-Please re-review current versions in this folder:
-- `drift_monitor.py`
-- `retrain_policy.py`
-- `router.py`
-- `change_history.md`
+## What we want from Kimi 2.5
+1. Confirm or reject the overfit diagnosis.
+2. Prioritize the next intervention order.
+3. Suggest the best minimal-safe plan to get the 15m holdout to:
+   - Sharpe `> 0.5`
+   - Return `> 0%`
+   before paper trading.

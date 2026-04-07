@@ -61,6 +61,17 @@ class AthenaRisk:
         self.kelly_enabled   = config.get("kelly_enabled", True)
         self.kelly_fraction  = config.get("kelly_fraction", 0.25)
 
+        # Runtime circuit breaker for model degradation / regime breaks
+        self.circuit_breaker_enabled = bool(config.get("circuit_breaker_enabled", True))
+        self.circuit_breaker_window_trades = int(config.get("circuit_breaker_window_trades", 20))
+        self.circuit_breaker_min_win_rate = float(config.get("circuit_breaker_min_win_rate", 0.35))
+        self.circuit_breaker_min_sharpe = float(config.get("circuit_breaker_min_sharpe", 0.0))
+        self.circuit_breaker_max_consecutive_losses = int(config.get("circuit_breaker_max_consecutive_losses", 5))
+        self.circuit_breaker_reduce_size_factor = float(config.get("circuit_breaker_reduce_size_factor", 0.25))
+        self.circuit_breaker_hard_pause = bool(config.get("circuit_breaker_hard_pause", False))
+        self.circuit_breaker_active = False
+        self.circuit_breaker_reason = "inactive"
+
     def register_open_position(self, signal: AthenaSignal, size_usd: float, sl: float, tp: float):
         """Регистрирует новую открытую позицию для risk-контроля."""
         exists = any(
@@ -119,10 +130,18 @@ class AthenaRisk:
             if p.symbol == signal.symbol and p.direction == signal.direction:
                 return AthenaDecision(False, f"Дубль {signal.symbol}")
 
-        # 6. Размер позиции
-        size = self._calculate_size(signal)
+        # 6. Circuit breaker / degradation guard
+        self._evaluate_circuit_breaker()
+        if self.circuit_breaker_active and self.circuit_breaker_hard_pause:
+            return AthenaDecision(False, f"Circuit breaker active: {self.circuit_breaker_reason}")
 
-        return AthenaDecision(True, "OK", size)
+        # 7. Размер позиции
+        size = self._calculate_size(signal)
+        reason = "OK"
+        if self.circuit_breaker_active:
+            reason = f"OK | circuit-breaker:{self.circuit_breaker_reason}"
+
+        return AthenaDecision(True, reason, size)
 
     def _calculate_size(self, signal: AthenaSignal) -> float:
         """
@@ -138,25 +157,29 @@ class AthenaRisk:
 
         if not self.kelly_enabled or len(self.trade_history) < 20:
             # Недостаточно истории → используем базовый размер × confidence
-            return max(10.0, base_size * signal.confidence)
+            size = max(10.0, base_size * signal.confidence)
+        else:
+            wins   = [t["pnl"] for t in self.trade_history[-50:] if t.get("pnl", 0) > 0]
+            losses = [t["pnl"] for t in self.trade_history[-50:] if t.get("pnl", 0) < 0]
 
-        wins   = [t["pnl"] for t in self.trade_history[-50:] if t.get("pnl", 0) > 0]
-        losses = [t["pnl"] for t in self.trade_history[-50:] if t.get("pnl", 0) < 0]
+            if not wins or not losses:
+                size = max(10.0, base_size * signal.confidence)
+            else:
+                p     = len(wins) / (len(wins) + len(losses))    # win rate
+                b     = abs(np.mean(wins)) / (abs(np.mean(losses)) + 1e-9)  # win/loss ratio
+                kelly = (p * b - (1 - p)) / (b + 1e-9)
+                kelly = max(0.0, min(kelly, 1.0))
 
-        if not wins or not losses:
-            return max(10.0, base_size * signal.confidence)
+                # Дробный Kelly × confidence модели
+                size  = self.total_balance * kelly * self.kelly_fraction * signal.confidence
 
-        p     = len(wins) / (len(wins) + len(losses))    # win rate
-        b     = abs(np.mean(wins)) / (abs(np.mean(losses)) + 1e-9)  # win/loss ratio
-        kelly = (p * b - (1 - p)) / (b + 1e-9)
-        kelly = max(0.0, min(kelly, 1.0))
+                # Ограничиваем максимальным размером из конфига
+                max_size = self.total_balance * self.cfg["max_position_pct"]
+                size = max(10.0, min(size, max_size))
 
-        # Дробный Kelly × confidence модели
-        size  = self.total_balance * kelly * self.kelly_fraction * signal.confidence
-
-        # Ограничиваем максимальным размером из конфига
-        max_size = self.total_balance * self.cfg["max_position_pct"]
-        return max(10.0, min(size, max_size))
+        if self.circuit_breaker_active:
+            size *= self.circuit_breaker_reduce_size_factor
+        return max(10.0, size)
 
     def update(self, result: Dict):
         pnl = result.get("pnl", 0.0)
@@ -175,6 +198,38 @@ class AthenaRisk:
             "ts":      time.time(),
             "balance": self.total_balance,
         })
+
+    def _evaluate_circuit_breaker(self):
+        if not self.circuit_breaker_enabled or len(self.trade_history) < self.circuit_breaker_window_trades:
+            self.circuit_breaker_active = False
+            self.circuit_breaker_reason = "inactive"
+            return
+
+        recent = self.trade_history[-self.circuit_breaker_window_trades :]
+        pnls = np.array([float(t.get("pnl", 0.0)) for t in recent], dtype=float)
+        win_rate = float(np.mean(pnls > 0)) if len(pnls) else 0.0
+        std = float(pnls.std()) if len(pnls) else 0.0
+        sharpe = 0.0 if std < 1e-9 else float(pnls.mean() / std * np.sqrt(252))
+
+        consecutive_losses = 0
+        for trade in reversed(recent):
+            if float(trade.get("pnl", 0.0)) < 0:
+                consecutive_losses += 1
+            else:
+                break
+
+        triggered = (
+            (win_rate < self.circuit_breaker_min_win_rate and sharpe < self.circuit_breaker_min_sharpe)
+            or consecutive_losses >= self.circuit_breaker_max_consecutive_losses
+        )
+
+        self.circuit_breaker_active = triggered
+        if triggered:
+            self.circuit_breaker_reason = (
+                f"win_rate={win_rate:.2f}, sharpe={sharpe:.2f}, losses={consecutive_losses}"
+            )
+        else:
+            self.circuit_breaker_reason = "inactive"
 
     def calculate_sl_tp(self, price: float, direction: int):
         sl_pct = self.cfg["stop_loss_pct"]
@@ -227,6 +282,8 @@ class AthenaRisk:
             "rolling_sharpe_24h": self._rolling_sharpe_24h(),
             "vol_regime":         self.current_vol_regime,
             "sentiment":          self.current_sentiment,
+            "circuit_breaker_active": self.circuit_breaker_active,
+            "circuit_breaker_reason": self.circuit_breaker_reason,
         }
 
     def _reset_daily_if_needed(self):

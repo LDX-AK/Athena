@@ -5,7 +5,17 @@ from athena.config import ATHENA_CONFIG
 
 class TestAthenaConfig(unittest.TestCase):
     def test_required_top_level_keys(self):
-        for key in ["exchanges", "symbols", "timeframe", "flags", "risk", "data"]:
+        for key in [
+            "exchanges",
+            "symbols",
+            "timeframe",
+            "flags",
+            "risk",
+            "data",
+            "training",
+            "feature_groups",
+            "experiment",
+        ]:
             self.assertIn(key, ATHENA_CONFIG)
 
     def test_hybrid_weights_sum_to_one(self):

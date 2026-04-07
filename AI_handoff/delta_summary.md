@@ -1,3 +1,24 @@
+# Delta Summary (Current focus: 15m overfit / Kimi 2.5 review)
+
+## Current Delta (2026-04-07)
+- Linux parity with the validated Windows 15m setup is restored.
+- Verified exact reference artifacts on Linux:
+  - model `athena/model/athena_brain_15m.pkl` -> SHA256 `ad644f5189aa6ddc8c3b32089d92f9690db51d913b46459a5e219432d5572be7`
+  - CSV `data/raw/ohlcv/BTCUSDT_15m_2025_06.csv` -> SHA256 `3bdde032e4f61657ea8bf58b7319e4b9be2bcff45c4d2232d3519a5542244c18`
+- Code sync from the Windows-side branch:
+  - `athena/config.py` now includes `training`, `feature_groups`, `sentiment`, `training_timeframe`, `runtime_timeframe`
+  - `athena/features/engineer.py` supports `AthenaEngineer(cfg)` and feature-group gating
+  - `athena/model/signal.py` includes ATR labeling, schema alignment, and feature-importance export
+- Fresh proof runs:
+  - `source .venv/bin/activate && python run_compare_15m_fast.py`
+    - June benchmark positive again on Linux (`sent_on__conservative` +0.11%, Sharpe 15.54; `sent_off__aggressive` +0.42%, Sharpe 5.21)
+  - 90d holdout matrix saved to `data/results/backtest_15m_holdout_90d_windows_ref.json`
+    - all 4 scenarios remain negative, which isolates the issue to poor generalization / overfitting
+- New review package prepared for external consultation:
+  - `from_deepseek/answer2.md` -> Deepseek's diagnosis/treatment plan
+  - `copilot_review_deepseek_answer2.md` -> Copilot assessment and corrections
+  - refreshed `for_kimi.md` / `send_once_message_for_kimi.md` for Kimi 2.5
+
 # Delta Summary (After Kimi answer4.1)
 
 ## Scope

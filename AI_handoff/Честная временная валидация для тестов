@@ -1,0 +1,162 @@
+Результаты последних тестов Проверка тестами
+Команда:
+
+
+cd /home/Andrew/Athenasource .venv/bin/activatepython -m unittest tests.test_signal_model tests.test_risk_manager tests.test_config tests.test_retrain_policy
+Результат:
+Ran 13 tests in 0.041s
+OK
+
+Данные докачаны помесячно
+Команда:
+
+
+source .venv/bin/activate && python scripts/fetch_15m_monthly.py --start 2025-04 --end 2025-09
+Подтверждено:
+BTCUSDT_15m_2025_04.csv — 2880 rows
+BTCUSDT_15m_2025_05.csv — 2976 rows
+BTCUSDT_15m_2025_06.csv — уже был
+BTCUSDT_15m_2025_07.csv — 2976 rows
+BTCUSDT_15m_2025_08.csv — 2976 rows
+BTCUSDT_15m_2025_09.csv — 2880 rows
+Результат новой модели по walk-forward
+Команда:
+
+
+source .venv/bin/activate && python run_walkforward_15m.py
+Сохранено в:
+
+walkforward_15m_deepseek_like.json
+Итог по кандидатам
+Лучший из новых кандидатов: deepseek_like_v1
+Validation (June 2025)
+conservative: -0.26%, Sharpe -4.34
+aggressive: -0.21%, Sharpe -1.00
+Holdout (Jul–Sep 2025)
+conservative: -0.52%, Sharpe -3.89
+aggressive: -1.40%, Sharpe -2.57
+Главный вывод
+Упрощение по мотивам Deepseek + честный walk-forward уже реализованы и проверены.
+
+Но свежая проверка показала:
+
+да, модель стала честнее тестироваться
+нет, этого пока недостаточно, чтобы выйти в плюс на holdout
+То есть гипотеза подтвердилась:
+
+✅ проблема была в generalization
+❌ но simplification alone не вылечила модель
+Что делать дальше
+Следующий логичный шаг теперь уже не гадательный:
+
+сделать feature-group ablation matrix
+
+rolling OFF
+sentiment OFF
+rolling+sentiment OFF
+regime OFF
+оценивать не по accuracy, а по:
+
+Sharpe
+Profit Factor
+Return
+Drawdown
+после этого запускать ещё один retrain-cycle
+
+Какие именно тесты запускались
+Команда была такая:
+
+
+cd /home/Andrew/Athenasource .venv/bin/activatepython -m unittest \  tests.test_signal_model \  tests.test_risk_manager \  tests.test_config \  tests.test_retrain_policy
+Наборы тестов
+tests.test_signal_model
+Проверяет:
+
+schema alignment при инференсе
+заполнение missing features нулями
+достаточный lookback
+наличие training / feature_groups в ATHENA_CONFIG
+override training.model_params
+ATR-labeling через create_labels_atr()
+tests.test_risk_manager
+Проверяет:
+
+что после серии убытков circuit breaker уменьшает размер позиции
+tests.test_config
+Проверяет:
+
+обязательные top-level ключи в ATHENA_CONFIG
+что LGBM_WEIGHT + SENTIMENT_WEIGHT == 1.0
+sanity-check risk limits
+sanity-check mtf_* настроек
+tests.test_retrain_policy
+Проверяет:
+
+emergency retrain bypass trigger
+emergency rate limit
+Почему получилось Ran 13 tests
+Суммарно:
+
+tests.test_signal_model → 6
+tests.test_risk_manager → 1
+tests.test_config → 4
+tests.test_retrain_policy → 2
+Итого: 13 тестов
+
+Подтверждённый результат
+Вывод команды был:
+
+
+Ran 13 tests in 0.041sOK
+
+Если хочешь, я могу следующим сообщением дать список всех 13 тестовых методов по именам.
+
+Все 13 тестовых методов по именам
+tests.test_signal_model
+TestAthenaModelSchemaAlignment.test_predict_ignores_extra_runtime_features
+TestAthenaModelSchemaAlignment.test_predict_fills_missing_trained_features_with_zero
+TestAthenaTrainerLookback.test_feature_lookback_satisfies_engineer_windows
+TestAthenaTrainingConfig.test_config_exposes_training_and_feature_group_sections
+TestAthenaTrainingConfig.test_model_params_can_be_overridden_from_config
+TestAthenaTrainingConfig.test_create_labels_uses_atr_mode_when_enabled
+tests.test_risk_manager
+TestAthenaRiskCircuitBreaker.test_circuit_breaker_reduces_position_size_after_loss_cluster
+tests.test_config
+TestAthenaConfig.test_required_top_level_keys
+TestAthenaConfig.test_hybrid_weights_sum_to_one
+TestAthenaConfig.test_risk_limits_sane
+TestAthenaConfig.test_mtf_settings_sane
+tests.test_retrain_policy
+TestRetrainPolicy.test_emergency_bypass_triggers
+TestRetrainPolicy.test_emergency_rate_limit
+
+Если хочешь, я сразу продолжу следующий этап без паузы: сделаю автоматическую ablation-матрицу по группам фич и прогоню новые кандидаты тем же walk-forward способом.
+
+Второй пилот как всегда предлагает, а я как всегда хочу больше (Жадность не порок!)
+
+Придумал новую надстройку для бота, надо развить и систематизировать мысль.У тебя получится лучше всего.
+
+Добавить в модель для тестов в бот и дашбоард отдельный тестовый управляющий API модуль с возможностью запоминания и сохранения созданной модели pkl мозга (в отдельной папке), и сохранения логов результатов тестов, сброса и изменения разных параметров бота, и признаков (по основным и дополнительным группам) для нахождения наилучших стратегий на разных временных отрезках торговли. Такая приспособа существенно секономит мне платные запросы на тесты второго пилота, да и на дашборд с картинками смотреть намного круче чем просто пялится в монитор когда он гоняет тесты. Сам хочу!
+
+Честная временная валидация для тестов.
+
+Датасеты
+
+Год,(разные годовые отрезки), дальше модель по временным месячным отрезкам
+
+Добавлено в config.py:
+
+"walk_forward": {  "train_months": ["2025-04", "2025-05"],  "validation_months": ["2025-06"],  "test_months": ["2025-07", "2025-08", "2025-09"],}
+
+Новые файлы
+fetch_15m_monthly.py
+Качает помесячные 15m CSV с Binance.
+
+run_walkforward_15m.py
+Запускает строгую схему:
+
+train: Apr–May 2025
+validation: June 2025
+test/holdout: Jul–Sep 2025
+
+

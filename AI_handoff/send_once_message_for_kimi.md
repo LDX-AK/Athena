@@ -1,39 +1,55 @@
-# One-Shot Message for Kimi
+# One-Shot Message for Kimi 2.5
 
-Use this as a single message when sending the package.
+Use this as a single message when sending the updated package.
 
 ---
 
 Hi Kimi,
 
-Sending one consolidated Stage 4 review package in one go.
+We have a new review package focused on the Athena 15m model's **generalization failure / overfit problem**.
 
-Context:
-- Stage 1-3 are already implemented (drift/retrain + MTF gate).
-- Stage 4 v1 (runtime telemetry writer) is now implemented in a backward-compatible way.
-- We aligned your answer4/answer4.1 ideas with current Athena contracts to avoid breaking Streamlit.
+What is already verified:
+- Linux parity with the validated Windows 15m setup is restored.
+- The exact June benchmark is positive again.
+- A fresh ~90 day holdout is still negative across all 4 scenarios.
 
-Please review in this order:
-1. `consolidated_stage4_for_kimi.md` (main context + decisions)
-2. `delta_summary.md` (what changed and validation)
-3. `stats_writer.py` (new Stage 4 module)
-4. `core.py` and `config.py` (integration points)
-5. `test_stats_writer.py` (coverage)
-6. `copilot_review_answer4.md`, `answer4.md`, `answer4.1.md` (proposal + review trail)
+This strongly suggests the main issue is no longer deployment, but **overfitting to the old June 2025 regime**.
+
+Please review these files in this order:
+1. `consolidated_15m_overfit_for_kimi.md`
+2. `from_deepseek/answer2.md`
+3. `copilot_review_deepseek_answer2.md`
+4. `from_kimi/project_snapshot/README.md`
+5. `from_kimi/project_snapshot/athena/config.py`
+6. `from_kimi/project_snapshot/athena/features/engineer.py`
+7. `from_kimi/project_snapshot/athena/model/signal.py`
+8. `from_kimi/project_snapshot/athena/model/drift_monitor.py`
+9. `from_kimi/project_snapshot/athena/model/retrain_policy.py`
+10. `from_kimi/project_snapshot/athena/risk/manager.py`
+11. `from_kimi/project_snapshot/train_model_tf.py`
+12. `from_kimi/project_snapshot/run_compare_15m_fast.py`
+13. `from_kimi/project_snapshot/tests/test_signal_model.py`
+14. `from_kimi/project_snapshot/data/results/backtest_15m_comparison.json`
+15. `from_kimi/project_snapshot/data/results/backtest_15m_holdout_90d_windows_ref.json`
+16. `change_history.md`
+17. `delta_summary.md`
 
 What we need from you now:
-1. Confirm whether Stage 4 v1 is production-safe for paper mode.
-2. Identify any edge cases we may still miss in writer lifecycle, atomic writes, or bounded history behavior.
-3. Recommend go/no-go for Stage 4 v2 migration path:
-   - JSONL trade history
-   - dual-reader in Streamlit (JSON + JSONL)
-   - optional I/O optimization
-4. If you see critical risks, provide exact priority fixes (P0/P1).
+1. Do you agree with the overfit diagnosis?
+2. What should we prioritize first:
+   - runtime circuit breaker,
+   - feature-group ablation,
+   - simpler LightGBM,
+   - stricter walk-forward validation?
+3. Should `sentiment` be disabled for the next 15m retrain cycle by default?
+4. What concrete acceptance criteria would you require on the holdout before paper trading?
 
-Current status:
-- Target tests for Stage 4 passed.
-- No diagnostics errors in changed files.
+Goal:
+Find the smallest robust set of changes that can move the 15m holdout to something like:
+- Sharpe `> 0.5`
+- Return `> 0%`
+while preserving the restored Linux parity.
 
-Thanks, we will apply your feedback in the next pass.
+Thanks.
 
 ---
