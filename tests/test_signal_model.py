@@ -7,7 +7,9 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 
-from athena.model.signal import AthenaModel, AthenaSignal
+from athena.config import ATHENA_CONFIG
+from athena.features.engineer import AthenaEngineer
+from athena.model.signal import AthenaModel, AthenaSignal, AthenaTrainer
 
 
 class TestAthenaModelSchemaAlignment(unittest.TestCase):
@@ -60,6 +62,13 @@ class TestAthenaModelSchemaAlignment(unittest.TestCase):
         self.assertIsInstance(signal, AthenaSignal)
         self.assertIn(signal.direction, (-1, 0, 1))
         self.assertEqual(signal.symbol, "ETH/USDT")
+
+
+class TestAthenaTrainerLookback(unittest.TestCase):
+    def test_feature_lookback_satisfies_engineer_windows(self):
+        trainer = AthenaTrainer(AthenaEngineer(), ATHENA_CONFIG)
+        lookback = trainer._feature_lookback()
+        self.assertGreaterEqual(lookback, max(trainer.engineer.windows) + 10)
 
 
 if __name__ == "__main__":

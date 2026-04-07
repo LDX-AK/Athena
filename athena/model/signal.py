@@ -138,6 +138,10 @@ class AthenaTrainer:
         self.engineer = engineer
         self.config   = config
 
+    def _feature_lookback(self) -> int:
+        windows = getattr(self.engineer, "windows", None) or [100]
+        return max(100, max(int(w) for w in windows) + 10)
+
     def create_labels(self, df, tp_pct=0.006, sl_pct=0.003, lookahead=10):
         """Triple Barrier Labeling (Lopez de Prado)."""
         close  = df["close"].values
@@ -168,7 +172,7 @@ class AthenaTrainer:
                                     tp_pct=self.config["risk"]["take_profit_pct"],
                                     sl_pct=self.config["risk"]["stop_loss_pct"])
 
-        lookback = 100
+        lookback = self._feature_lookback()
         all_feats = []
         for i in range(lookback, len(df)):
             batch = {"ohlcv": df.iloc[i-lookback:i].values.tolist(), "orderbook": {}}
@@ -178,6 +182,11 @@ class AthenaTrainer:
                 all_feats.append({k: v for k, v in f.items() if k not in _META_KEYS})
 
         X = pd.DataFrame(all_feats)
+        if X.empty:
+            raise ValueError(
+                f"No training samples generated from {len(df)} candles; lookback={lookback}. "
+                "Provide more history or reduce feature requirements."
+            )
         y = labels.iloc[lookback:lookback + len(all_feats)].map({-1: 0, 0: 1, 1: 2})
 
         tscv   = TimeSeriesSplit(n_splits=5)
