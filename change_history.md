@@ -24,6 +24,21 @@
 
 ## Completed Major Changes
 
+### [2026-04-09] Formal v2/v3 separation protocol
+- Locked a permanent branch model for parallel development:
+  - `dev/v2-revival` for regression-driven Athena v2 recovery,
+  - `dev/v3-regime-first` for the separate router-first Athena v3 track,
+  - `main` reserved for shared infrastructure fixes.
+- Added documented path helpers and isolated entrypoints:
+  - `athena/track_paths.py`
+  - `scripts/run_v2_regression.py`
+  - `scripts/run_v3_walkforward.py`
+- Artifact storage is now explicitly split across:
+  - `data/results/v2/` vs `data/results/v3/`
+  - `athena/model/v2/` vs `athena/model/v3/`
+- Verification:
+  - `.venv/bin/python -m unittest tests.test_track_paths tests.test_15m_scripts` → `Ran 17 tests in 0.623s, OK`
+
 ### [2026-04-01] GitHub synchronization after power outage
 - Synced local repository with GitHub `main`.
 - Committed and pushed:
@@ -145,3 +160,31 @@
   - `live_stats_path`, `trade_history_path`, `flush_interval_sec`, `max_history_trades`.
 - Added tests for telemetry writer:
   - `tests/test_stats_writer.py` (file creation, timestamp presence, bounded history behavior).
+
+### [2026-04-03 to 2026-04-08] Strict 15m research cycle expanded and verified
+- Extended the walk-forward program with hierarchy / macro-filter / adaptive-mode experiments across `1h`, `30m`, and `15m` variants.
+- Verified result: honest OOS remained negative across the tested branches; these runs are kept as negative controls in `data/results/`.
+- Added feature/label redesign v1:
+  - `atr_hilo` / `atr_first_touch` / `atr_intrabar` labeling modes,
+  - compact ablation candidates `core_compact`, `price_action_core`, `atr_hilo_core`.
+- Added runtime observability upgrades:
+  - pipeline diagnostics in `live_stats.json`,
+  - block-history charts in Streamlit,
+  - Mermaid architecture/runtime diagrams in `docs/`.
+- Added raw signal diagnostics by side / confidence / regime / hour and confirmed the core issue:
+  - long side dragged results,
+  - short side retained only a weak raw edge,
+  - high-confidence signals were not reliably better.
+
+### [2026-04-08] Scoped filters, dedicated short-only retrain, and v2 strategy archive
+- Added strict walk-forward controls:
+  - `--direction`, `--regime`, `--meta-hours`, `--meta-regimes`, `--meta-min-confidence`, `--meta-max-confidence`.
+- Added one-sided training support via `label_target=short|long|both` and fixed binary-class inference mapping.
+- Fresh verification evidence:
+  - `python -m unittest discover -s tests` → `Ran 62 tests in 0.806s, OK`.
+  - Q4 dedicated short-only holdout remained negative:
+    - conservative `-0.1927%`, Sharpe `-3.26`, PF `0.66`
+    - aggressive `-0.4136%`, Sharpe `-1.48`, PF `0.82`
+  - diagnostics for the retrained short-only model showed a small positive raw edge (`edge_per_signal = +0.0001608`) that did not survive execution costs / trade geometry.
+- Archived the v2 salvage branch snapshot into `backups/strategy_archive_2026-04-08/`.
+- Decision: freeze `Athena v2 short-only / meta-filter salvage` as a documented baseline and pivot the active roadmap to `Athena v3: Regime-first + Session-aware + rolling retrain`.
