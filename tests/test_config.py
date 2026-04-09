@@ -52,6 +52,11 @@ class TestAthenaConfig(unittest.TestCase):
         self.assertEqual(sentiment.get("min_timeframe"), "30m")
         self.assertIn(sentiment.get("mode"), {"weighted", "macro_gate"})
 
+        macro_filter = ATHENA_CONFIG.get("macro_filter", {})
+        self.assertIn(macro_filter.get("enabled"), {True, False})
+        self.assertEqual(macro_filter.get("timeframe"), "1h")
+        self.assertGreater(float(macro_filter.get("trend_threshold", 0.0)), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

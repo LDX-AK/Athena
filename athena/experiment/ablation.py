@@ -35,6 +35,8 @@ class AblationMatrix:
         scenarios["no_rolling_sentiment"] = ["rolling", "sentiment"]
         scenarios["no_regime"] = ["regime"]
         scenarios["minimal"] = ["regime", "rolling", "volatility", "volume", "sentiment"]
+        scenarios["core_compact"] = ["orderbook", "rolling", "time", "sentiment"]
+        scenarios["price_action_core"] = ["orderbook", "orderflow", "rolling", "time", "sentiment"]
         return scenarios
 
     def apply_scenario(self, scenario_name: str) -> Dict:

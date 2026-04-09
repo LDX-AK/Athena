@@ -101,6 +101,14 @@ class AthenaModel:
 
         return X
 
+    @staticmethod
+    def _class_to_direction(model_class) -> int:
+        try:
+            model_class = int(model_class)
+        except (TypeError, ValueError):
+            return 0
+        return {0: -1, 1: 0, 2: 1, -1: -1}.get(model_class, 0)
+
     def predict(self, features: Optional[Dict]) -> AthenaSignal:
         null = AthenaSignal(0, 0.0, "", "", 0.0, {})
         if not features:
@@ -116,11 +124,14 @@ class AthenaModel:
         if self.model is None:
             return self._baseline(X_dict, symbol, exchange, price)
 
-        X     = self._prepare_inference_frame(X_dict)
-        proba = self.model.predict_proba(X)[0]   # [SELL, HOLD, BUY]
-        cls   = int(np.argmax(proba))
-        conf  = float(proba[cls])
-        dir_  = {0: -1, 1: 0, 2: 1}[cls]
+        X = self._prepare_inference_frame(X_dict)
+        proba = self.model.predict_proba(X)[0]
+        cls_idx = int(np.argmax(proba))
+        conf = float(proba[cls_idx])
+
+        classes = getattr(self.model, "classes_", None)
+        model_class = classes[cls_idx] if classes is not None and len(classes) > cls_idx else cls_idx
+        dir_ = self._class_to_direction(model_class)
 
         return AthenaSignal(dir_, conf, symbol, exchange, price, features)
 
@@ -232,18 +243,82 @@ class AthenaTrainer:
         labels.extend([0] * lookahead)
         return pd.Series(labels, index=df.index)
 
+    def create_labels_atr_hilo(self, df, lookahead=10, atr_period=14, atr_tp_mult=1.0, atr_sl_mult=0.5):
+        """Intrabar ATR first-touch labeling using future highs/lows instead of closes only."""
+        close = df["close"]
+        high = df["high"]
+        low = df["low"]
+        atr = self._calc_atr(df, atr_period)
+        labels = []
+
+        for i in range(len(close) - lookahead):
+            atr_i = atr.iloc[i]
+            if pd.isna(atr_i) or atr_i <= 0:
+                labels.append(0)
+                continue
+
+            entry = close.iloc[i]
+            tp = entry + atr_i * atr_tp_mult
+            sl = entry - atr_i * atr_sl_mult
+            label = 0
+
+            for j in range(1, lookahead + 1):
+                future_high = high.iloc[i + j]
+                future_low = low.iloc[i + j]
+                hit_tp = future_high >= tp
+                hit_sl = future_low <= sl
+
+                if hit_tp and hit_sl:
+                    future_close = close.iloc[i + j]
+                    if future_close > entry:
+                        label = 1
+                    elif future_close < entry:
+                        label = -1
+                    else:
+                        label = 0
+                    break
+                if hit_tp:
+                    label = 1
+                    break
+                if hit_sl:
+                    label = -1
+                    break
+
+            labels.append(label)
+
+        labels.extend([0] * lookahead)
+        return pd.Series(labels, index=df.index)
+
+    def _apply_label_target(self, labels: pd.Series) -> pd.Series:
+        target = str(self.config.get("training", {}).get("label_target", "both")).strip().lower()
+        if target in {"short", "sell", "down"}:
+            return labels.where(labels <= 0, 0)
+        if target in {"long", "buy", "up"}:
+            return labels.where(labels >= 0, 0)
+        return labels
+
     def create_labels(self, df, tp_pct=0.006, sl_pct=0.003, lookahead=10):
         mode = self.config.get("training", {}).get("labeling_mode", "legacy")
+        training_cfg = self.config.get("training", {})
         if mode == "atr":
-            training_cfg = self.config.get("training", {})
-            return self.create_labels_atr(
+            labels = self.create_labels_atr(
                 df,
                 lookahead=training_cfg.get("label_lookahead", lookahead),
                 atr_period=training_cfg.get("atr_period", 14),
                 atr_tp_mult=training_cfg.get("atr_tp_mult", 1.0),
                 atr_sl_mult=training_cfg.get("atr_sl_mult", 0.5),
             )
-        return self.create_labels_legacy(df, tp_pct=tp_pct, sl_pct=sl_pct, lookahead=lookahead)
+        elif mode in {"atr_hilo", "atr_first_touch", "atr_intrabar"}:
+            labels = self.create_labels_atr_hilo(
+                df,
+                lookahead=training_cfg.get("label_lookahead", lookahead),
+                atr_period=training_cfg.get("atr_period", 14),
+                atr_tp_mult=training_cfg.get("atr_tp_mult", 1.0),
+                atr_sl_mult=training_cfg.get("atr_sl_mult", 0.5),
+            )
+        else:
+            labels = self.create_labels_legacy(df, tp_pct=tp_pct, sl_pct=sl_pct, lookahead=lookahead)
+        return self._apply_label_target(labels)
 
     def _save_feature_importance(self, importance: pd.Series, save_path: str) -> None:
         if not self.config.get("training", {}).get("save_feature_importance", True):
@@ -255,6 +330,7 @@ class AthenaTrainer:
             "training_timeframe": self.config.get("training_timeframe"),
             "runtime_timeframe": self.config.get("runtime_timeframe"),
             "labeling_mode": self.config.get("training", {}).get("labeling_mode", "legacy"),
+            "label_target": self.config.get("training", {}).get("label_target", "both"),
             "feature_groups": self.config.get("feature_groups", {}),
             "top_features": importance.to_dict(),
         }
@@ -295,6 +371,11 @@ class AthenaTrainer:
                 "Provide more history or reduce feature requirements."
             )
         y = labels.iloc[lookback:lookback + len(all_feats)].map({-1: 0, 0: 1, 1: 2})
+        if y.nunique() < 2:
+            raise ValueError(
+                "Training labels collapsed to a single class after applying label_target="
+                f"{self.config.get('training', {}).get('label_target', 'both')}."
+            )
 
         tscv = TimeSeriesSplit(n_splits=5)
         scores = []

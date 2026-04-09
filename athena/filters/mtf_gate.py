@@ -13,11 +13,15 @@ logger = logging.getLogger("athena.mtf")
 class MTFGate:
     def __init__(self, config: Dict):
         flags = config.get("flags", {})
-        self.enabled = bool(flags.get("MTF_FILTER_ENABLED", True))
+        macro_cfg = config.get("macro_filter", {})
+        macro_enabled = bool(macro_cfg.get("enabled", False))
+
+        self.enabled = bool(flags.get("MTF_FILTER_ENABLED", True) or macro_enabled)
         self.base_tf = str(config.get("runtime_timeframe") or config.get("timeframe", "1m"))
-        self.higher_tf = str(config.get("mtf_timeframe", "15m"))
-        self.min_trend = float(config.get("mtf_min_trend", 0.0015))
-        self.min_higher_candles = int(config.get("mtf_min_higher_candles", 12))
+        self.higher_tf = str(macro_cfg.get("timeframe") if macro_enabled else config.get("mtf_timeframe", "15m"))
+        self.min_trend = float(macro_cfg.get("trend_threshold", config.get("mtf_min_trend", 0.0015)))
+        self.min_higher_candles = int(macro_cfg.get("min_candles", config.get("mtf_min_higher_candles", 12)))
+        self.allow_neutral = bool(macro_cfg.get("allow_neutral", False))
 
         self._ratio = self._tf_ratio(self.base_tf, self.higher_tf)
 
@@ -95,6 +99,8 @@ class MTFGate:
         trend_strength = abs(fast - slow) / (slow + 1e-9)
 
         if trend_strength < self.min_trend:
+            if self.allow_neutral:
+                return True, f"mtf-neutral-pass:{trend_strength:.5f}"
             return False, f"mtf-flat:{trend_strength:.5f}"
 
         trend_direction = 1 if fast > slow else -1

@@ -11,14 +11,19 @@ athena/backtest/runner.py — AthenaBacktest v2
 import numpy as np
 import pandas as pd
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal
 from typing import List, Dict, Optional
 from athena.features.engineer import AthenaEngineer
-from athena.model.signal import AthenaModel
+from athena.model.signal import AthenaModel, AthenaSignal
 from athena.model.fusion import SignalFusion, SentimentSignal
 from athena.data.sentiment import AthenaSentiment
 from athena.filters.mtf_gate import MTFGate
+from athena.filters.regime_router import RegimeRouter
+from athena.risk.adaptive_mode import AdaptiveModeController
+from athena.strategy.prototypes import RoutePrototypeEngine
 
 logger = logging.getLogger("athena.backtest")
 
@@ -153,6 +158,9 @@ class AthenaBacktest:
         self.flags     = config.get("flags", {})
         self.fusion    = SignalFusion(config)
         self.mtf_gate  = MTFGate(config)
+        self.regime_router = RegimeRouter(config)
+        self.route_prototypes = RoutePrototypeEngine(config)
+        self.router_enabled = bool(config.get("router", {}).get("enabled", False))
 
     def _sentiment_macro_gate_allows(self, direction: int, sentiment: Optional[Dict]) -> tuple[bool, str]:
         sent_cfg = self.config.get("sentiment", {})
@@ -191,11 +199,8 @@ class AthenaBacktest:
             columns=["timestamp", "open", "high", "low", "close", "volume"]
         ).astype(float)
 
-        sl_pct   = self.config["risk"]["stop_loss_pct"]
-        tp_pct   = self.config["risk"]["take_profit_pct"]
-        pos_pct  = self.config["risk"]["max_position_pct"]
-        min_conf = self.config["risk"]["min_confidence"]
-        comm     = 0.0004
+        risk_cfg = dict(self.config["risk"])
+        comm = 0.0004
         lookback = max(
             int(self.config.get("data", {}).get("lookback_candles", 200)),
             max(getattr(self.engineer, "windows", [120])) + 10,
@@ -204,6 +209,22 @@ class AthenaBacktest:
         balance, trades = initial_balance, []
         in_pos = False
         entry = sl = tp = direction = 0
+        position_size = 0.0
+        entry_route = None
+        entry_route_reason = None
+        entry_session = None
+        entry_regime = None
+        router_history = []
+        route_counts: Dict[str, int] = {}
+        last_route_reason = ""
+
+        adaptive = AdaptiveModeController(self.config)
+        mode_history = []
+        if adaptive.enabled:
+            risk_proxy = SimpleNamespace(cfg=risk_cfg)
+            for key, value in risk_cfg.items():
+                setattr(risk_proxy, key, value)
+            adaptive.set_risk_manager(risk_proxy)
 
         use_sentiment = (
             self.flags.get("SENTIMENT_ENABLED", True) and
@@ -213,6 +234,7 @@ class AthenaBacktest:
         logger.info(
             f"📈 Бэктест: {len(df)} свечей | "
             f"Sentiment: {'ON' if use_sentiment else 'OFF'} | "
+            f"Adaptive: {'ON' if adaptive.enabled else 'OFF'} | "
             f"Symbol: {symbol}"
         )
 
@@ -229,7 +251,7 @@ class AthenaBacktest:
 
                 if hit_sl or hit_tp:
                     ex_price = sl if hit_sl else tp
-                    sz       = balance * pos_pct
+                    sz       = position_size
                     pnl      = (ex_price - entry) / entry * sz * direction
                     pnl     -= sz * comm * 2
                     balance += pnl
@@ -241,8 +263,17 @@ class AthenaBacktest:
                         "entry":     entry,
                         "exit":      ex_price,
                         "direction": direction,
+                        "route":     entry_route,
+                        "route_reason": entry_route_reason,
+                        "session":   entry_session,
+                        "regime":    entry_regime,
                     })
                     in_pos = False
+                    position_size = 0.0
+                    entry_route = None
+                    entry_route_reason = None
+                    entry_session = None
+                    entry_regime = None
 
             # ── Ищем новый сигнал ──────────────────────────────
             if not in_pos:
@@ -252,6 +283,18 @@ class AthenaBacktest:
                     "symbol":    symbol,
                     "exchange":  "binance",
                 }
+
+                if adaptive.enabled:
+                    new_mode = adaptive.update(
+                        i - lookback,
+                        {"ohlcv": batch["ohlcv"], "recent_trades": trades},
+                    )
+                    if new_mode is not None:
+                        mode_history.append({
+                            "bar_index": i - lookback,
+                            "mode": new_mode.value,
+                            "reason": adaptive.last_reason,
+                        })
 
                 # Добавляем sentiment из CSV если включён
                 sent_data = {}
@@ -263,6 +306,11 @@ class AthenaBacktest:
                 if features is None:
                     continue
 
+                sl_pct = float(risk_cfg["stop_loss_pct"])
+                tp_pct = float(risk_cfg["take_profit_pct"])
+                pos_pct = float(risk_cfg["max_position_pct"])
+                min_conf = float(risk_cfg["min_confidence"])
+
                 signal = self.fusion.predict(features, sent_data if use_sentiment else None)
                 mtf_ok, _ = self.mtf_gate.allow_signal(batch["ohlcv"], signal.direction)
                 sentiment_ok, _ = self._sentiment_macro_gate_allows(
@@ -270,16 +318,141 @@ class AthenaBacktest:
                     sent_data if use_sentiment else None,
                 )
 
-                if signal.direction != 0 and signal.confidence >= min_conf and mtf_ok and sentiment_ok:
+                prototype_name = None
+                if self.router_enabled:
+                    route_decision = self.regime_router.decide(
+                        features,
+                        timestamp_ms=ts,
+                        raw_confidence=signal.confidence,
+                    )
+                    current_regime = str(route_decision.get("regime", "normal"))
+                    current_session = str(route_decision.get("session", "unknown"))
+                    route_name = str(route_decision.get("route", "directional"))
+                    route_reason = str(route_decision.get("reason", ""))
+                    adjusted_confidence = float(route_decision.get("adjusted_confidence", signal.confidence))
+
+                    prototype_decision = self.route_prototypes.apply(route_name, features)
+                    if prototype_decision is not None:
+                        prototype_name = prototype_decision.name
+                        route_reason = f"{route_reason} | {prototype_decision.reason}"
+                        if prototype_decision.direction == 0:
+                            signal = AthenaSignal(0, 0.0, signal.symbol, signal.exchange, signal.price, signal.features)
+                            adjusted_confidence = 0.0
+                        else:
+                            signal = AthenaSignal(
+                                direction=prototype_decision.direction,
+                                confidence=float(prototype_decision.confidence),
+                                symbol=signal.symbol,
+                                exchange=signal.exchange,
+                                price=signal.price,
+                                features=signal.features,
+                            )
+                            adjusted_confidence = float(signal.confidence)
+
+                    last_route_reason = route_reason
+                    route_counts[route_name] = route_counts.get(route_name, 0) + 1
+                    max_router_history = int(self.config.get("router", {}).get("max_history", 200))
+                    if len(router_history) < max_router_history:
+                        router_history.append({
+                            "timestamp": ts,
+                            "route": route_name,
+                            "regime": current_regime,
+                            "session": current_session,
+                            "reason": route_reason,
+                            "prototype": prototype_name,
+                            "raw_confidence": float(signal.confidence),
+                            "adjusted_confidence": adjusted_confidence,
+                        })
+                else:
+                    vol_regime = float(features.get("vol_regime", 0.5))
+                    current_regime = "quiet" if vol_regime < 0.25 else ("hot" if vol_regime > 0.75 else "normal")
+                    current_session = "disabled"
+                    route_name = "disabled"
+                    route_reason = "router-disabled"
+                    adjusted_confidence = float(signal.confidence)
+
+                exp_cfg = self.config.get("experiment", {})
+                direction_filter = str(exp_cfg.get("direction_filter", "both")).strip().lower()
+                regime_filter = str(exp_cfg.get("regime_filter", "all")).strip().lower()
+                meta_cfg = dict(exp_cfg.get("meta_filter", {}) or {})
+                current_hour = int(features.get(
+                    "hour_bucket",
+                    datetime.fromtimestamp(float(ts) / 1000.0, tz=timezone.utc).hour,
+                ))
+                direction_ok = (
+                    direction_filter == "both"
+                    or (direction_filter == "long" and signal.direction > 0)
+                    or (direction_filter == "short" and signal.direction < 0)
+                )
+                regime_ok = regime_filter in {"all", current_regime}
+                route_ok = (not self.router_enabled) or route_name != "no_trade"
+
+                allowed_hours = {
+                    int(hour) % 24
+                    for hour in meta_cfg.get("allowed_hours", [])
+                    if str(hour).strip() != ""
+                }
+                allowed_regimes = {
+                    str(name).strip().lower()
+                    for name in meta_cfg.get("allowed_regimes", [])
+                    if str(name).strip()
+                }
+                meta_min_conf = meta_cfg.get("min_confidence")
+                meta_max_conf = meta_cfg.get("max_confidence")
+                hour_ok = not allowed_hours or current_hour in allowed_hours
+                meta_regime_ok = not allowed_regimes or current_regime in allowed_regimes
+                meta_conf_ok = (
+                    (meta_min_conf is None or adjusted_confidence >= float(meta_min_conf))
+                    and (meta_max_conf is None or adjusted_confidence <= float(meta_max_conf))
+                )
+
+                if (
+                    signal.direction != 0
+                    and route_ok
+                    and direction_ok
+                    and regime_ok
+                    and hour_ok
+                    and meta_regime_ok
+                    and meta_conf_ok
+                    and adjusted_confidence >= min_conf
+                    and mtf_ok
+                    and sentiment_ok
+                ):
                     entry, direction = cl, signal.direction
+                    position_size = balance * pos_pct
                     sl = entry * (1 - sl_pct) if direction == 1 else entry * (1 + sl_pct)
                     tp = entry * (1 + tp_pct) if direction == 1 else entry * (1 - tp_pct)
+                    entry_route = route_name
+                    entry_route_reason = route_reason
+                    entry_session = current_session
+                    entry_regime = current_regime
                     in_pos = True
 
-        return self._report(trades, initial_balance, balance, df)
+        adaptive_summary = None
+        if adaptive.enabled:
+            adaptive_summary = adaptive.summary()
+            adaptive_summary["history"] = mode_history
+
+        router_summary = {
+            "enabled": self.router_enabled,
+            "route_counts": route_counts,
+            "last_route_reason": last_route_reason,
+            "history": router_history[-50:],
+        }
+
+        return self._report(
+            trades,
+            initial_balance,
+            balance,
+            df,
+            adaptive_summary=adaptive_summary,
+            router_summary=router_summary,
+        )
 
     def _report(self, trades: List[Dict], init: float,
-                final: float, df: pd.DataFrame) -> Dict:
+                final: float, df: pd.DataFrame,
+                adaptive_summary: Optional[Dict] = None,
+                router_summary: Optional[Dict] = None) -> Dict:
         if not trades:
             logger.warning("Нет сделок в бэктесте")
             return {}
@@ -334,6 +507,10 @@ class AthenaBacktest:
             "best_trade":         max(pnls),
             "worst_trade":        min(pnls),
         }
+        if adaptive_summary:
+            m["adaptive_mode"] = adaptive_summary
+        if router_summary:
+            m["router"] = router_summary
 
         self._print_report(m)
         return m
@@ -354,6 +531,17 @@ class AthenaBacktest:
         print(f"  Avg Loss:          ${m['avg_loss']:.2f}")
         print(f"  Макс. серия побед: {m['max_win_streak']}")
         print(f"  Макс. серия потерь:{m['max_loss_streak']}")
+        if m.get("adaptive_mode", {}).get("enabled"):
+            adaptive = m["adaptive_mode"]
+            print(
+                f"  Adaptive Mode:     {adaptive.get('current_mode', 'n/a')} "
+                f"| switches={adaptive.get('switch_count', 0)}"
+            )
+        router = m.get("router", {}) or {}
+        if router.get("route_counts"):
+            print(f"  Router routes:     {router.get('route_counts', {})}")
+            if router.get("last_route_reason"):
+                print(f"  Last route reason: {router.get('last_route_reason')}")
         print("━" * 56)
 
         ok = (m["sharpe_ratio"]  > 1.5 and

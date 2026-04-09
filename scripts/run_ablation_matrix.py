@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import sys
+from collections import OrderedDict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +23,39 @@ from athena.model.signal import AthenaTrainer
 
 RESULTS_DIR = ROOT / "data" / "results"
 MODEL_DIR = ROOT / "athena" / "model"
+
+
+def build_redesign_plan(ablation: AblationMatrix) -> OrderedDict[str, dict]:
+    requested_scenarios = ["baseline", "no_rolling", "no_regime", "core_compact", "price_action_core"]
+    plan: OrderedDict[str, dict] = OrderedDict()
+
+    for scenario_name, disabled_groups in ablation.unique_scenarios(requested_scenarios).items():
+        plan[scenario_name] = {
+            "disabled_groups": disabled_groups,
+            "training_overrides": {},
+        }
+
+    plan["atr_hilo_core"] = {
+        "disabled_groups": ["orderbook", "rolling", "time", "sentiment"],
+        "training_overrides": {
+            "labeling_mode": "atr_hilo",
+            "atr_tp_mult": 0.8,
+            "atr_sl_mult": 0.6,
+        },
+    }
+    return plan
+
+
+def apply_redesign_overrides(cfg: dict, disabled_groups: list[str], training_overrides: dict) -> dict:
+    feature_groups = cfg.setdefault("feature_groups", {})
+    for group in AblationMatrix.DEFAULT_GROUPS:
+        feature_groups.setdefault(group, True)
+    for group in disabled_groups:
+        feature_groups[group] = False
+
+    training_cfg = cfg.setdefault("training", {})
+    training_cfg.update(training_overrides or {})
+    return cfg
 
 
 def main() -> None:
@@ -41,13 +76,16 @@ def main() -> None:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-    requested_scenarios = ["baseline", "no_rolling", "no_sentiment", "no_rolling_sentiment", "no_regime", "minimal"]
-    scenario_plan = ablation.unique_scenarios(requested_scenarios)
+    scenario_plan = build_redesign_plan(ablation)
     results = {}
     out_path = RESULTS_DIR / f"ablation_matrix_{timeframe}.json"
 
-    for scenario_name, disabled_groups in scenario_plan.items():
-        cfg = ablation.apply_scenario(scenario_name)
+    for scenario_name, spec in scenario_plan.items():
+        cfg = apply_redesign_overrides(
+            copy.deepcopy(base_cfg),
+            spec.get("disabled_groups", []),
+            spec.get("training_overrides", {}),
+        )
         cfg["symbols"] = ["BTC/USDT"]
         cfg["timeframe"] = timeframe
         cfg["runtime_timeframe"] = timeframe
@@ -63,7 +101,9 @@ def main() -> None:
         val_result = validator.run_backtest(model_path, val_df, profile="conservative")
         test_result = validator.run_backtest(model_path, test_df, profile="conservative")
         payload = {
-            "disabled_groups": disabled_groups,
+            "disabled_groups": spec.get("disabled_groups", []),
+            "labeling_mode": cfg.get("training", {}).get("labeling_mode", "legacy"),
+            "training_overrides": spec.get("training_overrides", {}),
             "validation": val_result,
             "holdout": test_result,
             "validation_score": validator.score_result(val_result),

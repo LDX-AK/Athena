@@ -1,0 +1,38 @@
+sequenceDiagram
+    actor Operator
+    participant Feed as AthenaFetcher
+    participant Sent as AthenaSentiment
+    participant Eng as AthenaEngineer
+    participant Fusion as SignalFusion
+    participant MTF as MTFGate
+    participant Risk as AthenaRisk
+    participant Router as AthenaRouter
+    participant Writer as StatsWriter
+    participant UI as Streamlit Dashboard
+
+    Feed->>Eng: batch {ohlcv, orderbook}
+    Sent->>Eng: sentiment snapshot
+    Eng->>Fusion: engineered features
+    Fusion->>MTF: AthenaSignal(direction, confidence)
+    MTF-->>Fusion: allow/block + reason
+
+    alt Blocked by MTF
+        MTF->>Writer: mtf_blocks++, last_mtf_reason
+        Writer->>UI: refresh live_stats.json
+    else Passed MTF
+        Fusion->>Risk: risk.check(signal)
+        alt Blocked by risk or size
+            Risk->>Writer: risk_blocks++, size_blocks++, reason
+            Writer->>UI: runtime diagnostics update
+        else Approved and opened
+            Risk->>Router: size + SL/TP plan
+            Router-->>Risk: order/trade result
+            Risk->>Writer: pnl, balance, orders_opened
+            Writer->>UI: telemetry + trade history
+        end
+    end
+
+    Operator-->>UI: presets / overrides
+    UI-->>Fusion: weights
+    UI-->>MTF: filter toggle
+    UI-->>Risk: min_confidence

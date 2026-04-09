@@ -238,6 +238,13 @@ class AthenaRisk:
             return price * (1 - sl_pct), price * (1 + tp_pct)
         return price * (1 + sl_pct), price * (1 - tp_pct)
 
+    def apply_profile(self, overrides: Dict):
+        """Applies an adaptive risk profile without replacing the underlying manager."""
+        for key, value in (overrides or {}).items():
+            self.cfg[key] = value
+            if hasattr(self, key):
+                setattr(self, key, value)
+
     def get_ppo_state(self) -> np.ndarray:
         """
         Формируем state vector для AthenaShield (PPO).

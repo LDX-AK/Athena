@@ -127,6 +127,21 @@ def load_stats() -> dict:
             "model_version": "unknown",
             "last_signal_symbol": None,
             "last_signal_direction": 0,
+            "feature_skips": 0,
+            "risk_blocks": 0,
+            "size_blocks": 0,
+            "orders_opened": 0,
+            "signals_seen": 0,
+            "batches_seen": 0,
+            "last_mtf_reason": "not_checked",
+            "last_risk_reason": "not_checked",
+            "last_size_reason": "not_checked",
+            "runtime_status": "unknown",
+            "mtf_blocks_history": [],
+            "risk_blocks_history": [],
+            "size_blocks_history": [],
+            "orders_opened_history": [],
+            "runtime_action_counts": {},
         },
     )
 
@@ -482,6 +497,49 @@ with tab_runtime:
     }
     for name, state in flags.items():
         st.write(("ON  " if state else "OFF ") + name)
+
+    st.markdown("### Pipeline Diagnostics")
+    d1, d2, d3, d4 = st.columns(4)
+    with d1:
+        st.metric("Signals", f"{int(stats.get('signals_seen', 0))}")
+    with d2:
+        st.metric("MTF Blocks", f"{int(stats.get('mtf_blocks', 0))}")
+    with d3:
+        st.metric("Risk Blocks", f"{int(stats.get('risk_blocks', 0))}")
+    with d4:
+        st.metric("Orders Opened", f"{int(stats.get('orders_opened', 0))}")
+
+    e1, e2, e3 = st.columns(3)
+    with e1:
+        st.metric("Feature Skips", f"{int(stats.get('feature_skips', 0))}")
+    with e2:
+        st.metric("Size Blocks", f"{int(stats.get('size_blocks', 0))}")
+    with e3:
+        st.metric("Runtime Status", str(stats.get("runtime_status", "unknown")))
+
+    with st.container(border=True):
+        st.markdown("**Last Decisions / Reasons**")
+        st.write(f"`MTF:` {stats.get('last_mtf_reason', 'not_checked')}")
+        st.write(f"`Risk:` {stats.get('last_risk_reason', 'not_checked')}")
+        st.write(f"`Size:` {stats.get('last_size_reason', 'not_checked')}")
+        drift_alerts = stats.get("drift_alerts") or []
+        if drift_alerts:
+            st.write(f"`Drift alerts:` {', '.join(map(str, drift_alerts))}")
+        runtime_counts = stats.get("runtime_action_counts") or {}
+        if runtime_counts:
+            st.json(runtime_counts)
+
+    if stats.get("mtf_blocks_history") or stats.get("risk_blocks_history"):
+        st.subheader("Filter blocks over time")
+        blocks_df = pd.DataFrame(
+            {
+                "mtf": stats.get("mtf_blocks_history", []),
+                "risk": stats.get("risk_blocks_history", []),
+            }
+        )
+        if not blocks_df.empty:
+            st.area_chart(blocks_df, height=180, width="stretch")
+            st.caption("Shows which gate is rejecting more signals in the recent runtime window.")
 
     st.markdown("### Active Overrides")
     if overrides:

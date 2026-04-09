@@ -387,23 +387,39 @@ class AthenaEngineer:
         return feats
 
     # ══════════════════════════════════════════════════════════
-    # БЛОК 10 — Временные фичи (оригинал)
+    # БЛОК 10 — Временные фичи + SessionContext v1
     # ══════════════════════════════════════════════════════════
     def _time_features(self, df) -> Dict:
         ts = df["timestamp"].iloc[-1] / 1000
         dt = datetime.datetime.utcfromtimestamp(ts)
         h, m = dt.hour, dt.minute
         dow  = dt.weekday()  # 0=пн, 6=вс
+
+        session_asia = float(0 <= h < 8)
+        session_europe = float(7 <= h < 15)
+        session_us = float(13 <= h < 22)
+        session_overlap = float(13 <= h < 15)
+        is_weekend = float(dow >= 5)
+
         return {
             "hour_sin":      np.sin(2 * np.pi * h / 24),
             "hour_cos":      np.cos(2 * np.pi * h / 24),
             "minute_sin":    np.sin(2 * np.pi * m / 60),
             "dow_sin":       np.sin(2 * np.pi * dow / 7),
-            "london_open":   float(8  <= h <= 12),
+            "hour_bucket":   int(h),
+            "session_asia":  session_asia,
+            "session_europe": session_europe,
+            "session_us":    session_us,
+            "session_overlap": session_overlap,
+            "is_weekend":    is_weekend,
+            "session_open_phase": float(h in {0, 7, 13}),
+            "session_close_phase": float(h in {8, 15, 22}),
+            # backward-compatible legacy fields
+            "london_open":   float(8 <= h <= 12),
             "ny_open":       float(13 <= h <= 17),
-            "asia_open":     float(0  <= h <= 7),
-            "overlap_session": float(12 <= h <= 16),  # London+NY overlap — пик ликвидности
-            "weekend":       float(dow >= 5),
+            "asia_open":     session_asia,
+            "overlap_session": session_overlap,
+            "weekend":       is_weekend,
         }
 
     # ══════════════════════════════════════════════════════════

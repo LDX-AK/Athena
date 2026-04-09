@@ -38,4 +38,18 @@ class AthenaDashboard:
         print(f"  Avg Win:         ${s['avg_win']:.2f}")
         print(f"  Avg Loss:        ${s['avg_loss']:.2f}")
         print(f"  Открытых поз.:   {s['open_positions']}")
+
+        diagnostics = getattr(self.risk, "diagnostics", {}) or {}
+        if diagnostics:
+            print("  ── Diagnostics ─────────────────────────────")
+            print(f"  Signals/Batch:   {diagnostics.get('signals_seen', 0)}/{diagnostics.get('batches_seen', 0)}")
+            print(f"  Blocks MTF/Risk: {diagnostics.get('mtf_blocks', 0)}/{diagnostics.get('risk_blocks', 0)}")
+            print(f"  Feature skips:   {diagnostics.get('feature_skips', 0)}")
+            print(f"  Orders opened:   {diagnostics.get('orders_opened', 0)}")
+            route_counts = diagnostics.get("route_counts")
+            if route_counts:
+                print(f"  Router routes:   {route_counts}")
+            last_route_reason = diagnostics.get("last_route_reason")
+            if last_route_reason:
+                print(f"  Last route:      {last_route_reason}")
         print("━" * 52 + "\n")

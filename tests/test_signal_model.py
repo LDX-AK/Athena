@@ -65,6 +65,34 @@ class TestAthenaModelSchemaAlignment(unittest.TestCase):
         self.assertIn(signal.direction, (-1, 0, 1))
         self.assertEqual(signal.symbol, "ETH/USDT")
 
+    def test_predict_uses_model_classes_for_binary_buy_hold_model(self):
+        X = pd.DataFrame(
+            {
+                "ret_1": [-0.2, -0.1, 0.2, 0.4],
+                "rsi": [-0.5, -0.2, 0.4, 0.8],
+            }
+        )
+        y = np.array([1, 1, 2, 2])
+        model = LogisticRegression(max_iter=500)
+        model.fit(X, y)
+
+        buy_hold_path = Path(self.tmpdir.name) / "buy_hold_model.pkl"
+        with buy_hold_path.open("wb") as fh:
+            pickle.dump(model, fh)
+
+        runtime_model = AthenaModel(str(buy_hold_path))
+        signal = runtime_model.predict(
+            {
+                "ret_1": 0.35,
+                "rsi": 0.7,
+                "_symbol": "BTC/USDT",
+                "_exchange": "binance",
+                "_last_price": 100_000.0,
+            }
+        )
+
+        self.assertEqual(signal.direction, 1)
+
 
 class TestAthenaTrainerLookback(unittest.TestCase):
     def test_feature_lookback_satisfies_engineer_windows(self):
@@ -137,6 +165,58 @@ class TestAthenaTrainingConfig(unittest.TestCase):
         )
 
         pd.testing.assert_series_equal(labels, expected)
+
+    def test_create_labels_supports_intrabar_first_touch_mode(self):
+        cfg = copy.deepcopy(ATHENA_CONFIG)
+        cfg.setdefault("training", {})
+        cfg["training"].update(
+            {
+                "labeling_mode": "atr_hilo",
+                "label_lookahead": 2,
+                "atr_period": 2,
+                "atr_tp_mult": 0.5,
+                "atr_sl_mult": 0.5,
+            }
+        )
+        trainer = AthenaTrainer(AthenaEngineer(cfg), cfg)
+        df = pd.DataFrame(
+            {
+                "open": [100.0, 100.0, 100.1, 100.1, 100.2, 100.2],
+                "high": [100.3, 100.4, 101.2, 100.5, 100.6, 100.7],
+                "low": [99.7, 99.8, 99.9, 99.9, 100.0, 100.0],
+                "close": [100.0, 100.1, 100.15, 100.16, 100.2, 100.22],
+                "volume": [10, 11, 12, 13, 14, 15],
+            }
+        )
+
+        labels = trainer.create_labels(df, tp_pct=0.25, sl_pct=0.25, lookahead=2)
+        self.assertEqual(int(labels.iloc[1]), 1)
+
+    def test_create_labels_can_scope_to_short_only_target(self):
+        cfg = copy.deepcopy(ATHENA_CONFIG)
+        cfg.setdefault("training", {})
+        cfg["training"].update(
+            {
+                "labeling_mode": "legacy",
+                "label_target": "short",
+            }
+        )
+        trainer = AthenaTrainer(AthenaEngineer(cfg), cfg)
+        df = pd.DataFrame(
+            {
+                "open": [100.0, 100.0, 101.0, 99.0, 100.0, 98.0],
+                "high": [100.2, 101.2, 101.2, 100.2, 100.2, 99.2],
+                "low": [99.8, 99.8, 98.8, 98.8, 97.8, 97.8],
+                "close": [100.0, 101.0, 99.0, 100.0, 98.0, 99.0],
+                "volume": [10, 11, 12, 13, 14, 15],
+            }
+        )
+
+        labels = trainer.create_labels(df, tp_pct=0.005, sl_pct=0.005, lookahead=1)
+        unique_labels = {int(value) for value in labels.tolist()}
+
+        self.assertIn(-1, unique_labels)
+        self.assertNotIn(1, unique_labels)
 
 
 if __name__ == "__main__":

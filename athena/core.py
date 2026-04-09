@@ -178,10 +178,41 @@ async def run(
     last_signal_direction = 0
     last_drift_alerts = []
     mtf_block_count = 0
+    risk_block_count = 0
+    feature_skip_count = 0
+    size_block_count = 0
+    orders_opened_count = 0
+    batches_seen = 0
+    signals_seen = 0
+    last_mtf_reason = "not_checked"
+    last_risk_reason = "not_checked"
+    last_size_reason = "not_checked"
+    runtime_status = "starting"
+    mtf_blocks_history = []
+    risk_blocks_history = []
+    size_blocks_history = []
+    orders_opened_history = []
+    history_limit = 120
     current_prices = {}
     model_version = str(cfg.get("model_version") or Path(cfg.get("model_path", "")).name or "unknown")
 
-    def emit_live_stats():
+    def emit_live_stats(
+        mtf_blocked: int = 0,
+        risk_blocked: int = 0,
+        size_blocked: int = 0,
+        order_opened: int = 0,
+    ):
+        mtf_blocks_history.append(int(mtf_blocked))
+        risk_blocks_history.append(int(risk_blocked))
+        size_blocks_history.append(int(size_blocked))
+        orders_opened_history.append(int(order_opened))
+
+        if len(mtf_blocks_history) > history_limit:
+            del mtf_blocks_history[:-history_limit]
+            del risk_blocks_history[:-history_limit]
+            del size_blocks_history[:-history_limit]
+            del orders_opened_history[:-history_limit]
+
         unrealized_pnl = calc_unrealized_pnl(router, current_prices) if mode == "paper" else 0.0
         live_stats = risk.stats()
         live_stats.update({
@@ -200,12 +231,37 @@ async def run(
             "last_signal_direction": last_signal_direction,
             "drift_alerts": last_drift_alerts,
             "mtf_blocks": mtf_block_count,
+            "feature_skips": feature_skip_count,
+            "risk_blocks": risk_block_count,
+            "size_blocks": size_block_count,
+            "orders_opened": orders_opened_count,
+            "signals_seen": signals_seen,
+            "batches_seen": batches_seen,
+            "last_mtf_reason": last_mtf_reason,
+            "last_risk_reason": last_risk_reason,
+            "last_size_reason": last_size_reason,
+            "runtime_status": runtime_status,
+            "mtf_blocks_history": list(mtf_blocks_history),
+            "risk_blocks_history": list(risk_blocks_history),
+            "size_blocks_history": list(size_blocks_history),
+            "orders_opened_history": list(orders_opened_history),
+            "runtime_action_counts": {
+                "batches_seen": batches_seen,
+                "signals_seen": signals_seen,
+                "feature_skips": feature_skip_count,
+                "mtf_blocks": mtf_block_count,
+                "risk_blocks": risk_block_count,
+                "size_blocks": size_block_count,
+                "orders_opened": orders_opened_count,
+            },
         })
+        setattr(risk, "diagnostics", live_stats.get("runtime_action_counts", {}))
         writer.update_live_stats(live_stats)
 
     try:
         async for batch in fetcher.stream():
             try:
+                batches_seen += 1
                 now_ts = time.time()
                 if now_ts - last_override_check >= 2.0:
                     last_override_check = now_ts
@@ -277,6 +333,8 @@ async def run(
                 # 2. Строим фичи (~60 признаков)
                 features = engineer.transform(batch)
                 if features is None:
+                    feature_skip_count += 1
+                    runtime_status = "waiting_for_features"
                     emit_live_stats()
                     continue
 
@@ -286,22 +344,29 @@ async def run(
 
                 # 3. Hybrid Signal Fusion
                 signal = fusion.predict(features, sent_data)
+                signals_seen += 1
+                runtime_status = "signal_emitted"
                 last_signal_symbol = signal.symbol
                 last_signal_direction = signal.direction
 
                 # 3.1 Multi-timeframe trend gate
                 mtf_ok, mtf_reason = mtf_gate.allow_signal(batch.get("ohlcv", []), signal.direction)
+                last_mtf_reason = mtf_reason
                 if not mtf_ok:
                     mtf_block_count += 1
+                    runtime_status = "blocked_by_mtf"
                     logger.debug("⛔ %s: %s", symbol, mtf_reason)
-                    emit_live_stats()
+                    emit_live_stats(mtf_blocked=1)
                     continue
 
                 # 4. Проверка риск-менеджера
                 decision = risk.check(signal)
+                last_risk_reason = decision.reason or "approved"
                 if not decision.approved:
+                    risk_block_count += 1
+                    runtime_status = "blocked_by_risk"
                     logger.debug(f"⛔ {symbol}: {decision.reason}")
-                    emit_live_stats()
+                    emit_live_stats(risk_blocked=1)
                     continue
 
                 # 5. RL Shield — корректируем размер позиции
@@ -310,21 +375,32 @@ async def run(
                 final_size = decision.adjusted_size_usd * shield_dec.size_multiplier
 
                 if final_size < 10.0:
+                    size_block_count += 1
+                    last_size_reason = f"size<{final_size:.2f}"
+                    runtime_status = "blocked_by_size"
                     logger.debug(f"⛔ Размер слишком мал: ${final_size:.2f}")
-                    emit_live_stats()
+                    emit_live_stats(size_blocked=1)
                     continue
+
+                last_size_reason = f"size={final_size:.2f}"
 
                 # 6. Вычисляем SL/TP и исполняем
                 sl, tp = risk.calculate_sl_tp(signal.price, signal.direction)
                 result = await router.execute(signal, final_size, sl, tp)
+                runtime_status = str(result.get("status") or "signal_processed")
 
                 # 7. Регистрируем открытие позиции (PnL считаем только на закрытии)
                 if result.get("status") in {"paper_opened", "opened"}:
+                    orders_opened_count += 1
+                    runtime_status = "order_opened"
                     risk.register_open_position(signal, final_size, sl, tp)
+                    emit_live_stats(order_opened=1)
+                    continue
 
                 emit_live_stats()
 
             except Exception as e:
+                runtime_status = "loop_error"
                 logger.error(f"Ошибка в цикле [{symbol}]: {e}", exc_info=True)
     finally:
         await writer.stop()
@@ -355,7 +431,7 @@ async def _backtest(fetcher, engineer, sentiment, cfg,
             csv_path,
             symbol=symbol,
             max_rows=limit if limit > 0 else None,
-            window=csv_window,
+            window="last" if csv_window == "last" else "first",
         )
     else:
         if fetcher is None:

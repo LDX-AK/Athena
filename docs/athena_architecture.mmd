@@ -1,0 +1,40 @@
+flowchart LR
+    subgraph Data
+        F[AthenaFetcher<br/>market + orderbook]
+        S[AthenaSentiment<br/>csv/api sentiment]
+    end
+
+    subgraph SignalLayer[Signal Layer]
+        E[AthenaEngineer<br/>feature groups / compact core]
+        M[SignalFusion<br/>LightGBM + sentiment]
+        G[MTFGate<br/>macro/context filter]
+    end
+
+    subgraph Execution[Risk & Execution]
+        R[AthenaRisk<br/>confidence, Kelly, limits]
+        P[AthenaShield<br/>RL size modifier]
+        X[AthenaRouter<br/>paper/live execution]
+    end
+
+    subgraph Observability[Observability & Control]
+        D[DriftMonitor / RetrainPolicy]
+        W[StatsWriter<br/>live_stats + trade_history]
+        UI[Streamlit Control Deck<br/>diagnostics + overrides]
+    end
+
+    F --> E
+    S --> E
+    E --> M
+    M --> G
+    G -->|pass| R
+    G -->|blocked| W
+    R -->|approved| P
+    R -->|blocked| W
+    P --> X
+    X --> D
+    X --> W
+    D --> W
+    W --> UI
+    UI -.runtime overrides.-> M
+    UI -.runtime overrides.-> G
+    UI -.runtime overrides.-> R

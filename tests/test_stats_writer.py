@@ -25,7 +25,18 @@ class TestStatsWriter(unittest.IsolatedAsyncioTestCase):
 
             writer = StatsWriter(cfg)
             await writer.start()
-            writer.update_live_stats({"balance": 10100.0, "daily_pnl": 100.0, "total_pnl": 100.0, "total_trades": 1, "win_rate": 1.0, "open_positions": 0})
+            writer.update_live_stats({
+                "balance": 10100.0,
+                "daily_pnl": 100.0,
+                "total_pnl": 100.0,
+                "total_trades": 1,
+                "win_rate": 1.0,
+                "open_positions": 0,
+                "runtime_status": "order_opened",
+                "runtime_action_counts": {"orders_opened": 1, "risk_blocks": 0},
+                "mtf_blocks_history": [0, 1, 1],
+                "risk_blocks_history": [0, 0, 0],
+            })
             writer.log_trade({"symbol": "BTC/USDT", "pnl": 10.0, "result": "TP", "direction": 1, "balance": 10010.0})
             await asyncio.sleep(0.12)
             await writer.stop()
@@ -37,6 +48,10 @@ class TestStatsWriter(unittest.IsolatedAsyncioTestCase):
                 stats = json.load(fh)
             self.assertIn("timestamp", stats)
             self.assertEqual(stats["balance"], 10100.0)
+            self.assertEqual(stats["runtime_status"], "order_opened")
+            self.assertEqual(stats["runtime_action_counts"]["orders_opened"], 1)
+            self.assertEqual(stats["mtf_blocks_history"][-1], 1)
+            self.assertEqual(stats["risk_blocks_history"][-1], 0)
 
             with open(history_path, "r", encoding="utf-8") as fh:
                 history = json.load(fh)

@@ -48,6 +48,14 @@ ATHENA_CONFIG = {
         "signal": "15m",
         "entry": "5m",
     },
+    "macro_filter": {
+        "enabled": False,
+        "timeframe": "1h",
+        "method": "trend",
+        "trend_threshold": 0.0015,
+        "min_candles": 12,
+        "allow_neutral": False,
+    },
 
     # ─── ПУТИ К МОДЕЛЯМ ───────────────────────────────────────
     "model_path":          "athena/model/athena_brain.pkl",
@@ -99,6 +107,69 @@ ATHENA_CONFIG = {
         "circuit_breaker_max_consecutive_losses": 5,
         "circuit_breaker_reduce_size_factor": 0.25,
         "circuit_breaker_hard_pause": False,
+    },
+
+    # ─── ADAPTIVE RISK PROFILE (экспериментально, только после OOS-проверки) ──
+    "adaptive_mode": {
+        "enabled": False,
+        "default_mode": "conservative",
+        "update_interval_bars": 12,
+        "hysteresis_bars": 8,
+        "market_regime": {
+            "enabled": True,
+            "timeframes": ["1h"],
+            "weights": {"1h": 1.0},
+            "trend_threshold": 0.0015,
+            "strong_trend_multiplier": 1.5,
+            "volatility_threshold": 0.01,
+            "high_vol_multiplier": 1.5,
+        },
+        "self_health": {
+            "enabled": True,
+            "window_trades": 20,
+            "min_win_rate": 0.35,
+            "min_sharpe": -0.5,
+            "min_profit_factor": 0.8,
+        },
+        "modes": {
+            "defensive": {
+                "max_position_pct": 0.005,
+                "min_confidence": 0.65,
+                "kelly_fraction": 0.10,
+                "max_open_positions": 1,
+                "cooldown_after_loss_sec": 600,
+            },
+            "conservative": {
+                "max_position_pct": 0.01,
+                "min_confidence": 0.55,
+                "kelly_fraction": 0.15,
+                "max_open_positions": 2,
+                "cooldown_after_loss_sec": 300,
+            },
+            "aggressive": {
+                "max_position_pct": 0.02,
+                "min_confidence": 0.45,
+                "kelly_fraction": 0.25,
+                "max_open_positions": 3,
+                "cooldown_after_loss_sec": 150,
+            },
+        },
+    },
+
+    # ─── ROUTER / SESSION×REGIME CALIBRATION ───────────────
+    "router": {
+        "enabled": False,
+        "max_history": 200,
+    },
+    "prototypes": {
+        "quiet_mean_reversion": {
+            "enabled": True,
+            "vwap_threshold": 0.0015,
+            "rsi_threshold": 0.12,
+            "bb_low": 0.35,
+            "bb_high": 0.65,
+            "min_confidence": 0.55,
+        },
     },
 
     # ─── DRIFT-МОНИТОРИНГ ────────────────────────────────────
